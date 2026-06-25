@@ -271,6 +271,40 @@ async function getUserHistory(userId) {
   return data;
 }
 
+/**
+ * Save the Master Panel message details.
+ */
+async function savePanelMessage(channelId, messageId) {
+  const { error } = await supabase
+    .from('system_config')
+    .upsert([
+      { key: 'panel_channel_id', value: channelId },
+      { key: 'panel_message_id', value: messageId }
+    ], { onConflict: 'key' });
+
+  if (error) {
+    // If table doesn't exist, we fall back to logging it.
+    console.warn('Could not save panel config to database. Ensure public.system_config table exists.');
+  }
+}
+
+/**
+ * Get the Master Panel message details.
+ */
+async function getPanelMessage() {
+  const { data, error } = await supabase
+    .from('system_config')
+    .select('*')
+    .in('key', ['panel_channel_id', 'panel_message_id']);
+
+  if (error || !data || data.length < 2) return null;
+  
+  const channel = data.find(d => d.key === 'panel_channel_id')?.value;
+  const message = data.find(d => d.key === 'panel_message_id')?.value;
+
+  return { channelId: channel, messageId: message };
+}
+
 module.exports = {
   supabase,
   getOrCreateUser,
@@ -279,5 +313,7 @@ module.exports = {
   getSpyMetric,
   calculateEstimatedEarnings,
   placeBet,
-  getUserHistory
+  getUserHistory,
+  savePanelMessage,
+  getPanelMessage
 };

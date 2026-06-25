@@ -1,28 +1,30 @@
-const { 
-  Client, 
-  GatewayIntentBits, 
-  ActionRowBuilder, 
-  StringSelectMenuBuilder, 
-  StringSelectMenuOptionBuilder, 
-  ButtonBuilder, 
-  ButtonStyle, 
-  EmbedBuilder, 
-  ModalBuilder, 
-  TextInputBuilder, 
-  TextInputStyle, 
-  REST, 
+const {
+  Client,
+  GatewayIntentBits,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  REST,
   Routes,
   SlashCommandBuilder
 } = require('discord.js');
 require('dotenv').config();
 
-const { 
-  getOrCreateUser, 
-  getActiveMatches, 
-  getSpyMetric, 
-  calculateEstimatedEarnings, 
-  placeBet, 
-  getUserHistory 
+const {
+  getOrCreateUser,
+  getActiveMatches,
+  getSpyMetric,
+  calculateEstimatedEarnings,
+  placeBet,
+  getUserHistory,
+  savePanelMessage,
+  getPanelMessage
 } = require('./src/database');
 const { syncFixtures, syncMockFixtures } = require('./src/footballApi');
 
@@ -30,111 +32,88 @@ const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
 const guildId = process.env.DISCORD_GUILD_ID;
 
-const client = new Client({ 
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] 
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
 });
 
-// Cache for temp user states (if needed)
-const userSelections = new Map(); // userId -> { fixtureId, prediction }
+// ─────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────
 
-client.once('ready', async () => {
-  console.log(`🤖 Logged in as ${client.user.tag}!`);
-  
-  // Register Slash Commands
-  const commands = [
-    new SlashCommandBuilder()
-      .setName('setup-panel')
-      .setDescription('Initializes the Project Blue-Lock Master Events Panel in the current channel.'),
-    new SlashCommandBuilder()
-      .setName('sync-matches')
-      .setDescription('Sync World Cup matches from API-Football.')
-      .addBooleanOption(option => 
-        option.setName('mock')
-          .setDescription('Use mock match data instead of calling live API-Football feed')
-          .setRequired(false)
-      ),
-    new SlashCommandBuilder()
-      .setName('profile')
-      .setDescription('View your tokens balance and active wagers.')
-  ].map(command => command.toJSON());
-
-  const rest = new REST({ version: '10' }).setToken(token);
-
-  try {
-    console.log('🔄 Started refreshing application (/) commands.');
-    if (guildId) {
-      // Fast guild registration for testing
-      await rest.put(
-        Routes.applicationGuildCommands(clientId, guildId),
-        { body: commands }
-      );
-      console.log('Successfully re-registered guild application (/) commands.');
-    } else {
-      // Global registration
-      await rest.put(
-        Routes.applicationCommands(clientId),
-        { body: commands }
-      );
-      console.log('Successfully re-registered global application (/) commands.');
-    }
-  } catch (error) {
-    console.error('Error registering slash commands:', error);
-  }
-});
-
-// Helper to determine if a kickoff date is today or tomorrow in AEST/AEDT
+/**
+ * Returns 'Today', 'Tomorrow', or null for a kickoff time in AEST/AEDT.
+ */
 function getAustralianDayLabel(kickoffStr) {
-  // AEST (UTC+10) or AEDT (UTC+11). For general comparison:
-  const kickoffDate = new Date(kickoffStr);
-  
-  // Convert current time and kickoff time to Australia/Sydney date strings
-  const formatter = new Intl.DateTimeFormat('en-US', {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Australia/Sydney',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
+    year: 'numeric', month: '2-digit', day: '2-digit'
   });
+  const nowLabel = formatter.format(new Date());
+  const tomorrowLabel = formatter.format(new Date(Date.now() + 86400000));
+  const kickoffLabel = formatter.format(new Date(kickoffStr));
 
-  const nowAussieStr = formatter.format(new Date());
-  const kickoffAussieStr = formatter.format(kickoffDate);
-
-  const nowAussie = new Date(nowAussieStr);
-  const kickoffAussie = new Date(kickoffAussieStr);
-
-  const diffTime = kickoffAussie - nowAussie;
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Tomorrow';
+  if (kickoffLabel === nowLabel) return 'Today';
+  if (kickoffLabel === tomorrowLabel) return 'Tomorrow';
   return null;
 }
 
 /**
- * Build the Master Events Panel Embed and Components
+ * Build a progress bar string for the Spy Metric.
+ * e.g.  ██████░░░░ 60%
+ */
+function progressBar(percent, length = 10) {
+  const filled = Math.round((percent / 100) * length);
+  const empty = length - filled;
+  return '█'.repeat(filled) + '░'.repeat(empty);
+}
+
+/**
+ * Format a token number with commas.
+ */
+function fmt(n) {
+  return n.toLocaleString();
+}
+
+// ─────────────────────────────────────────────
+// PANEL BUILDER
+// ─────────────────────────────────────────────
+
+/**
+ * Build the Master Events Panel embed and components.
  */
 async function buildMasterPanel() {
   const matches = await getActiveMatches();
-  
-  // Filter for today/tomorrow matches in Sydney time
+
+  // Show upcoming (NS) matches that are Today or Tomorrow in AEST/AEDT
   const upcomingMatches = matches.filter(m => {
-    if (m.status !== 'NS') return false; // Only not started matches
+    if (m.status !== 'NS') return false;
     const label = getAustralianDayLabel(m.kickoff_time);
     return label === 'Today' || label === 'Tomorrow';
   });
 
+  const now = new Date();
+  const aestTime = now.toLocaleTimeString('en-AU', {
+    timeZone: 'Australia/Sydney',
+    hour: '2-digit', minute: '2-digit'
+  });
+
   const embed = new EmbedBuilder()
-    .setTitle('🏆 Project Blue-Lock: World Cup Virtual Pool')
+    .setColor(0x1a6bff)
+    .setTitle('🏆  Project Blue-Lock  •  World Cup 2026')
     .setDescription(
-      'Wager fake tokens on real-world match outcomes!\n' +
-      '👉 Select a match from the dropdown below to place or modify your prediction.'
+      '> Use fake tokens to predict real match outcomes.\n' +
+      '> The bigger the upset, the bigger the jackpot.\n' +
+      '\u200b'  // zero-width space for spacing
     )
-    .setColor('#0055ff') // Slate blue
+    .setFooter({ text: `🕒 Last updated · ${aestTime} AEST  •  Use /profile to view your wallet` })
     .setTimestamp();
 
   if (upcomingMatches.length === 0) {
-    embed.addFields({ name: '⚽ Scheduled Matches', value: 'No upcoming matches scheduled for Today or Tomorrow (AEST/AEDT).' });
+    embed.addFields({
+      name: '⚽  Upcoming Matches',
+      value: '```\nNo matches scheduled for Today or Tomorrow (AEST/AEDT).\nRun /sync-matches to refresh the fixture list.\n```'
+    });
   } else {
-    // Group by today / tomorrow
     const groups = { Today: [], Tomorrow: [] };
     upcomingMatches.forEach(m => {
       const label = getAustralianDayLabel(m.kickoff_time);
@@ -143,51 +122,64 @@ async function buildMasterPanel() {
 
     for (const [day, dayMatches] of Object.entries(groups)) {
       if (dayMatches.length === 0) continue;
-      
+
       const lines = [];
       for (const m of dayMatches) {
-        // Fetch spy metric for live wager distribution representation
         const spy = await getSpyMetric(m.fixture_id);
-        const homeVotes = spy.home.votes;
-        const awayVotes = spy.away.votes;
-        const drawVotes = spy.draw.votes;
-        const total = spy.totalVotes || 1;
+        const total = spy.totalVotes || 0;
 
-        const homeShare = Math.round((homeVotes / total) * 100);
-        const awayShare = Math.round((awayVotes / total) * 100);
-        const drawShare = Math.round((drawVotes / total) * 100);
+        const homeShare = total > 0 ? Math.round((spy.home.votes / total) * 100) : 33;
+        const awayShare = total > 0 ? Math.round((spy.away.votes / total) * 100) : 33;
+        const drawShare = total > 0 ? Math.round((spy.draw.votes / total) * 100) : 34;
 
-        const spyString = spy.totalVotes > 0 
-          ? `📊 *Spy:* H: ${homeShare}% | A: ${awayShare}% | D: ${drawShare}% (${spy.totalTokens} 🪙)`
-          : `📊 *Spy:* No wagers placed yet`;
+        const unixTs = Math.floor(new Date(m.kickoff_time).getTime() / 1000);
 
-        const unixTimestamp = Math.floor(new Date(m.kickoff_time).getTime() / 1000);
-        lines.push(`• **${m.home_team}** vs **${m.away_team}**\n  🕒 <t:${unixTimestamp}:F>\n  ${spyString}\n`);
+        const spyBlock = spy.totalVotes > 0
+          ? [
+              `\`H ${progressBar(homeShare, 8)} ${String(homeShare).padStart(3)}%  ${fmt(spy.home.tokens)}🪙\``,
+              `\`D ${progressBar(drawShare, 8)} ${String(drawShare).padStart(3)}%  ${fmt(spy.draw.tokens)}🪙\``,
+              `\`A ${progressBar(awayShare, 8)} ${String(awayShare).padStart(3)}%  ${fmt(spy.away.tokens)}🪙\``
+            ].join('\n')
+          : '`No wagers placed yet — be the first!`';
+
+        lines.push(
+          `**${m.home_team}  🆚  ${m.away_team}**\n` +
+          `<t:${unixTs}:F>\n` +
+          `${spyBlock}\n` +
+          `\u200b`
+        );
       }
-      embed.addFields({ name: `⚽ Matches ${day}`, value: lines.join('\n') });
+
+      embed.addFields({
+        name: `📅  ${day}'s Matches`,
+        value: lines.join('\n')
+      });
     }
   }
 
-  // Create Select Menu Options
+  // ── Dropdown ──
   const selectMenu = new StringSelectMenuBuilder()
     .setCustomId('select_match')
-    .setPlaceholder('👉 Choose a match to bet on...');
+    .setPlaceholder('⚽  Select a match to place or edit your prediction...');
 
   if (upcomingMatches.length > 0) {
-    upcomingMatches.forEach(m => {
+    upcomingMatches.slice(0, 25).forEach(m => {
       selectMenu.addOptions(
         new StringSelectMenuOptionBuilder()
           .setLabel(`${m.home_team} vs ${m.away_team}`)
           .setValue(m.fixture_id)
-          .setDescription(`Kickoff: ${new Date(m.kickoff_time).toLocaleTimeString('en-AU', { timeZone: 'Australia/Sydney', hour: '2-digit', minute: '2-digit' })} AEST`)
+          .setDescription(
+            new Date(m.kickoff_time).toLocaleTimeString('en-AU', {
+              timeZone: 'Australia/Sydney',
+              hour: '2-digit', minute: '2-digit', hour12: true
+            }) + ' AEST'
+          )
+          .setEmoji('⚽')
       );
     });
   } else {
-    selectMenu.addOptions(
-      new StringSelectMenuOptionBuilder()
-        .setLabel('No matches available')
-        .setValue('none')
-        .setDisabled(true)
+    selectMenu.setDisabled(true).addOptions(
+      new StringSelectMenuOptionBuilder().setLabel('No matches available').setValue('none')
     );
   }
 
@@ -195,166 +187,300 @@ async function buildMasterPanel() {
 
   const btnHistory = new ButtonBuilder()
     .setCustomId('view_my_history')
-    .setLabel('👤 View My History')
+    .setLabel('My Predictions')
+    .setEmoji('📊')
     .setStyle(ButtonStyle.Secondary);
 
-  const btnCalc = new ButtonBuilder()
+  const btnRules = new ButtonBuilder()
     .setCustomId('show_rules')
-    .setLabel('📖 Game Rules & Formulas')
+    .setLabel('How to Play')
+    .setEmoji('📖')
     .setStyle(ButtonStyle.Secondary);
 
-  const row2 = new ActionRowBuilder().addComponents(btnHistory, btnCalc);
+  const row2 = new ActionRowBuilder().addComponents(btnHistory, btnRules);
 
   return { embeds: [embed], components: [row1, row2] };
 }
 
+// ─────────────────────────────────────────────
+// AUTO-UPDATE PANEL HELPER
+// ─────────────────────────────────────────────
+
+/**
+ * Silently refresh the pinned Master Panel message in the events channel.
+ * Called after every bet, sync, or significant interaction.
+ */
+async function refreshPanel() {
+  try {
+    const config = await getPanelMessage();
+    if (!config) return;
+
+    const channel = await client.channels.fetch(config.channelId);
+    if (!channel) return;
+
+    const message = await channel.messages.fetch(config.messageId);
+    if (!message) return;
+
+    const panelData = await buildMasterPanel();
+    await message.edit(panelData);
+  } catch (err) {
+    // Non-fatal: panel refresh failures should never crash the bot
+    console.warn('Panel auto-refresh skipped:', err.message);
+  }
+}
+
+// ─────────────────────────────────────────────
+// SLASH COMMAND REGISTRATION
+// ─────────────────────────────────────────────
+
+client.once('ready', async () => {
+  console.log(`🤖  Logged in as ${client.user.tag}`);
+
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('setup-panel')
+      .setDescription('Post the Blue-Lock Master Events Panel in this channel.'),
+    new SlashCommandBuilder()
+      .setName('sync-matches')
+      .setDescription('Sync World Cup fixtures from API-Football into the database.')
+      .addBooleanOption(opt =>
+        opt.setName('mock')
+          .setDescription('Use mock match data instead of live API-Football feed')
+          .setRequired(false)
+      ),
+    new SlashCommandBuilder()
+      .setName('profile')
+      .setDescription('View your token balance and prediction history.')
+  ].map(c => c.toJSON());
+
+  const rest = new REST({ version: '10' }).setToken(token);
+  try {
+    if (guildId) {
+      await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+      console.log('✅  Guild slash commands registered.');
+    } else {
+      await rest.put(Routes.applicationCommands(clientId), { body: commands });
+      console.log('✅  Global slash commands registered.');
+    }
+  } catch (err) {
+    console.error('❌  Failed to register slash commands:', err);
+  }
+});
+
+// ─────────────────────────────────────────────
+// INTERACTION HANDLER
+// ─────────────────────────────────────────────
+
 client.on('interactionCreate', async interaction => {
-  // Slash Commands
+
+  // ── SLASH COMMANDS ─────────────────────────
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
+    // /setup-panel
     if (commandName === 'setup-panel') {
       await interaction.deferReply();
       try {
         const panelData = await buildMasterPanel();
-        await interaction.editReply(panelData);
+        const msg = await interaction.editReply(panelData);
+        // Save the channel + message IDs so refreshPanel() can find it
+        await savePanelMessage(msg.channelId, msg.id);
+        console.log(`✅  Panel saved — Channel: ${msg.channelId} | Message: ${msg.id}`);
       } catch (err) {
         console.error(err);
-        await interaction.editReply({ content: '❌ Failed to build/setup the panel.' });
+        await interaction.editReply({ content: '❌  Failed to build the panel. Check console logs.' });
       }
     }
 
+    // /sync-matches
     if (commandName === 'sync-matches') {
       await interaction.deferReply({ ephemeral: true });
       const useMock = interaction.options.getBoolean('mock') ?? false;
-
       try {
-        let result;
-        if (useMock) {
-          result = await syncMockFixtures();
-        } else {
-          result = await syncFixtures();
-        }
-        await interaction.editReply({ content: `✅ **Sync Successful:** ${result.message}` });
+        const result = useMock ? await syncMockFixtures() : await syncFixtures();
+        await interaction.editReply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0x00cc66)
+              .setTitle('✅  Sync Successful')
+              .setDescription(`${result.message}`)
+              .setTimestamp()
+          ]
+        });
+        // Refresh the panel after a sync
+        await refreshPanel();
       } catch (err) {
-        await interaction.editReply({ content: `❌ **Sync Failed:** ${err.message}` });
+        await interaction.editReply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0xff3333)
+              .setTitle('❌  Sync Failed')
+              .setDescription(`\`\`\`\n${err.message}\n\`\`\``)
+          ]
+        });
       }
     }
 
+    // /profile
     if (commandName === 'profile') {
       await interaction.deferReply({ ephemeral: true });
       try {
         const user = await getOrCreateUser(interaction.user);
         const history = await getUserHistory(interaction.user.id);
-        
-        const activeBets = history.filter(b => b.matches.status === 'NS');
-        const pastBets = history.filter(b => b.matches.status !== 'NS');
+
+        const activeBets = history.filter(b => b.matches?.status === 'NS');
+        const pastBets = history.filter(b => b.matches?.status !== 'NS' && b.matches?.winner);
+
+        const wins = pastBets.filter(b => b.team_picked === b.matches.winner).length;
+        const accuracy = pastBets.length > 0 ? Math.round((wins / pastBets.length) * 100) : 0;
 
         const embed = new EmbedBuilder()
-          .setTitle(`👤 ${user.display_name || user.username}'s Profile`)
-          .setDescription(`**Wallet Balance:** ${user.tokens_balance} 🪙 tokens`)
-          .setColor('#0055ff')
-          .setThumbnail(user.avatar_url || interaction.user.displayAvatarURL());
+          .setColor(0x1a6bff)
+          .setTitle(`${user.display_name || user.username}`)
+          .setDescription(
+            `> <@${user.discord_id}>\n\u200b`
+          )
+          .setThumbnail(user.avatar_url || interaction.user.displayAvatarURL())
+          .addFields(
+            {
+              name: '💰  Wallet',
+              value: `\`\`\`\n${fmt(user.tokens_balance)} tokens\n\`\`\``,
+              inline: true
+            },
+            {
+              name: '🏆  Win Rate',
+              value: `\`\`\`\n${wins}W / ${pastBets.length - wins}L  (${accuracy}%)\n\`\`\``,
+              inline: true
+            }
+          );
 
         if (activeBets.length > 0) {
-          const list = activeBets.map(b => 
-            `• **${b.matches.home_team}** vs **${b.matches.away_team}**: Predicted **${b.team_picked.toUpperCase()}** with **${b.amount_wagered}** 🪙`
-          ).join('\n');
-          embed.addFields({ name: '🕒 Active Wagers', value: list });
-        } else {
-          embed.addFields({ name: '🕒 Active Wagers', value: 'None' });
+          const list = activeBets.map(b =>
+            `⚽ **${b.matches.home_team} vs ${b.matches.away_team}**\n` +
+            `   Picked: **${b.team_picked.toUpperCase()}**  •  Wager: **${fmt(b.amount_wagered)}🪙**`
+          ).join('\n\n');
+          embed.addFields({ name: '\u200b\n🕒  Active Wagers', value: list });
         }
 
         if (pastBets.length > 0) {
-          const wins = pastBets.filter(b => b.team_picked === b.matches.winner).length;
-          embed.addFields({ name: '📊 Win/Loss Stats', value: `Total Predictions: ${pastBets.length}\nAccuracy: ${Math.round((wins / pastBets.length) * 100)}% (${wins} wins)` });
+          const lines = pastBets.slice(-5).reverse().map(b => {
+            const won = b.team_picked === b.matches.winner;
+            return `${won ? '✅' : '❌'}  **${b.matches.home_team} vs ${b.matches.away_team}**  •  ${b.team_picked.toUpperCase()}  (${fmt(b.amount_wagered)}🪙)`;
+          }).join('\n');
+          embed.addFields({ name: '\u200b\n📜  Recent Results', value: lines });
         }
 
+        embed.setFooter({ text: 'Use the dropdown in the events panel to place a bet' }).setTimestamp();
         await interaction.editReply({ embeds: [embed] });
       } catch (err) {
         console.error(err);
-        await interaction.editReply({ content: '❌ Failed to load profile.' });
+        await interaction.editReply({ content: '❌  Failed to load profile.' });
       }
     }
   }
 
-  // Dropdowns (String Select Menus)
+  // ── DROPDOWNS ──────────────────────────────
   if (interaction.isStringSelectMenu()) {
+
+    // Match selector
     if (interaction.customId === 'select_match') {
       const fixtureId = interaction.values[0];
-      if (fixtureId === 'none') return;
+      if (fixtureId === 'none') return interaction.deferUpdate();
 
       await interaction.deferReply({ ephemeral: true });
-
       try {
         const user = await getOrCreateUser(interaction.user);
-        // Find the match
         const matches = await getActiveMatches();
         const match = matches.find(m => m.fixture_id === fixtureId);
+        if (!match) return await interaction.editReply({ content: '❌  Match not found.' });
 
-        if (!match) {
-          return await interaction.editReply({ content: '❌ Match not found.' });
-        }
+        const spy = await getSpyMetric(fixtureId);
+        const total = spy.totalVotes || 0;
 
-        // Send confirmation/selection panel for this match
+        const homeShare = total > 0 ? Math.round((spy.home.votes / total) * 100) : 33;
+        const awayShare = total > 0 ? Math.round((spy.away.votes / total) * 100) : 33;
+        const drawShare = 100 - homeShare - awayShare;
+
+        const unixTs = Math.floor(new Date(match.kickoff_time).getTime() / 1000);
+
         const embed = new EmbedBuilder()
-          .setTitle(`Prediction Phase: ${match.home_team} vs ${match.away_team}`)
+          .setColor(0x1a6bff)
+          .setTitle(`⚽  ${match.home_team}  🆚  ${match.away_team}`)
           .setDescription(
-            `Choose your prediction for this match.\n\n` +
-            `**Your Balance:** ${user.tokens_balance} 🪙\n` +
-            `**Kickoff Time:** <t:${Math.floor(new Date(match.kickoff_time).getTime() / 1000)}:F>`
+            `**Kickoff:** <t:${unixTs}:F> (<t:${unixTs}:R>)\n\u200b`
           )
-          .setColor('#0055ff');
+          .addFields(
+            {
+              name: '💰  Your Wallet',
+              value: `\`${fmt(user.tokens_balance)} tokens\``,
+              inline: true
+            },
+            {
+              name: '🧮  Pool Size',
+              value: `\`${fmt(spy.totalTokens)} tokens wagered\``,
+              inline: true
+            },
+            {
+              name: '\u200b\n📊  Live Spy Metric',
+              value:
+                `\`H ${progressBar(homeShare, 10)} ${String(homeShare).padStart(3)}%  (${fmt(spy.home.tokens)}🪙)\`\n` +
+                `\`D ${progressBar(drawShare, 10)} ${String(drawShare).padStart(3)}%  (${fmt(spy.draw.tokens)}🪙)\`\n` +
+                `\`A ${progressBar(awayShare, 10)} ${String(awayShare).padStart(3)}%  (${fmt(spy.away.tokens)}🪙)\``
+            }
+          )
+          .setFooter({ text: 'Select your prediction below. You can change it before kickoff.' })
+          .setTimestamp();
 
-        const selectPrediction = new StringSelectMenuBuilder()
+        const predictionMenu = new StringSelectMenuBuilder()
           .setCustomId(`select_prediction:${fixtureId}`)
-          .setPlaceholder('🔮 Select prediction (Home, Away, or Draw)...')
+          .setPlaceholder('🔮  Choose your prediction...')
           .addOptions(
-            new StringSelectMenuOptionBuilder().setLabel(`Home: ${match.home_team}`).setValue('home'),
-            new StringSelectMenuOptionBuilder().setLabel(`Away: ${match.away_team}`).setValue('away'),
-            new StringSelectMenuOptionBuilder().setLabel('Draw').setValue('draw')
+            new StringSelectMenuOptionBuilder()
+              .setLabel(`Home Win — ${match.home_team}`)
+              .setValue('home')
+              .setEmoji('🏠'),
+            new StringSelectMenuOptionBuilder()
+              .setLabel('Draw')
+              .setValue('draw')
+              .setEmoji('🤝'),
+            new StringSelectMenuOptionBuilder()
+              .setLabel(`Away Win — ${match.away_team}`)
+              .setValue('away')
+              .setEmoji('✈️')
           );
 
-        const row = new ActionRowBuilder().addComponents(selectPrediction);
+        const row = new ActionRowBuilder().addComponents(predictionMenu);
         await interaction.editReply({ embeds: [embed], components: [row] });
       } catch (err) {
         console.error(err);
-        await interaction.editReply({ content: '❌ Something went wrong.' });
+        await interaction.editReply({ content: '❌  Something went wrong. Try again.' });
       }
     }
 
+    // Prediction selector → launch modal
     if (interaction.customId.startsWith('select_prediction:')) {
       const fixtureId = interaction.customId.split(':')[1];
       const prediction = interaction.values[0];
 
-      // Retrieve match details
-      const matches = await getActiveMatches();
-      const match = matches.find(m => m.fixture_id === fixtureId);
-
-      if (!match) {
-        return await interaction.reply({ content: '❌ Match not found.', ephemeral: true });
-      }
-
-      // Display Modal for amount
       const modal = new ModalBuilder()
         .setCustomId(`wager_modal:${fixtureId}:${prediction}`)
-        .setTitle('Place Token Wager');
+        .setTitle('Place Your Wager');
 
       const wagerInput = new TextInputBuilder()
         .setCustomId('wager_amount')
-        .setLabel('Token Wager Amount (0 for Free Vote)')
+        .setLabel('How many tokens? (Enter 0 for a Free Vote)')
         .setStyle(TextInputStyle.Short)
         .setPlaceholder('e.g. 250')
+        .setMinLength(1)
+        .setMaxLength(6)
         .setRequired(true);
 
-      const actionRow = new ActionRowBuilder().addComponents(wagerInput);
-      modal.addComponents(actionRow);
-
+      modal.addComponents(new ActionRowBuilder().addComponents(wagerInput));
       await interaction.showModal(modal);
     }
   }
 
-  // Modals Submissions
+  // ── MODAL SUBMISSIONS ──────────────────────
   if (interaction.isModalSubmit()) {
     if (interaction.customId.startsWith('wager_modal:')) {
       await interaction.deferReply({ ephemeral: true });
@@ -363,103 +489,184 @@ client.on('interactionCreate', async interaction => {
       const amountWagered = parseInt(amountStr, 10);
 
       if (isNaN(amountWagered) || amountWagered < 0) {
-        return await interaction.editReply({ content: '❌ Invalid wager amount. Please enter a valid number >= 0.' });
+        return await interaction.editReply({ content: '❌  Invalid amount. Enter a whole number ≥ 0.' });
       }
 
       try {
-        const user = await getOrCreateUser(interaction.user);
         const result = await placeBet(interaction.user.id, fixtureId, teamPicked, amountWagered);
-
-        // Fetch estimated earnings post-bet
         const estEarnings = await calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, interaction.user.id);
         const matches = await getActiveMatches();
         const match = matches.find(m => m.fixture_id === fixtureId);
 
+        const isFreeVote = amountWagered === 0;
+        const isUpdate = !!result.previousBet;
+
+        const pickEmoji = { home: '🏠', draw: '🤝', away: '✈️' }[teamPicked] || '🔮';
+        const multiplierStr = isFreeVote
+          ? 'Free Vote'
+          : estEarnings.multiplier > 1.0
+            ? `🔥 ${estEarnings.multiplier}x UNDERDOG BOOST`
+            : `${estEarnings.multiplier}x`;
+
         const embed = new EmbedBuilder()
-          .setTitle('✅ Prediction Submitted')
-          .setDescription(`Your prediction has been successfully recorded.`)
-          .setColor('#00ff55') // Green Success
-          .addFields(
-            { name: '⚽ Fixture', value: `${match.home_team} vs ${match.away_team}` },
-            { name: '🔮 Pick', value: teamPicked.toUpperCase(), inline: true },
-            { name: '🪙 Wagered', value: amountWagered === 0 ? 'Free Vote (+5 on win)' : `${amountWagered} 🪙`, inline: true },
-            { name: '📈 Est. Payout', value: amountWagered === 0 ? '5 🪙' : `${estEarnings.estimated} 🪙 (Multiplier: ${estEarnings.multiplier}x)`, inline: true },
-            { name: '💰 New Balance', value: `${result.newBalance} 🪙` }
+          .setColor(isFreeVote ? 0x9b59b6 : 0x00cc66)
+          .setTitle(isUpdate ? '🔄  Prediction Updated' : '✅  Prediction Locked In')
+          .setDescription(
+            `**${match.home_team}  🆚  ${match.away_team}**\n` +
+            `<t:${Math.floor(new Date(match.kickoff_time).getTime() / 1000)}:R>\n\u200b`
           )
+          .addFields(
+            {
+              name: `${pickEmoji}  Your Pick`,
+              value: `\`\`\`\n${teamPicked.toUpperCase()}\n\`\`\``,
+              inline: true
+            },
+            {
+              name: '🪙  Wagered',
+              value: `\`\`\`\n${isFreeVote ? 'Free Vote' : fmt(amountWagered) + ' tokens'}\n\`\`\``,
+              inline: true
+            },
+            {
+              name: '📈  Est. Return',
+              value: `\`\`\`\n${isFreeVote ? '+5 tokens (if correct)' : fmt(estEarnings.estimated) + ' tokens'}\n\`\`\``,
+              inline: true
+            },
+            {
+              name: '⚡  Multiplier',
+              value: multiplierStr,
+              inline: true
+            },
+            {
+              name: '💰  New Balance',
+              value: `\`${fmt(result.newBalance)} tokens\``,
+              inline: true
+            }
+          )
+          .setFooter({ text: 'You can change your prediction any time before kickoff.' })
           .setTimestamp();
 
         await interaction.editReply({ embeds: [embed] });
+
+        // Auto-refresh the panel to show updated Spy Metric
+        await refreshPanel();
       } catch (err) {
         console.error(err);
-        await interaction.editReply({ content: `❌ **Failed to place bet:** ${err.message}` });
+        const embed = new EmbedBuilder()
+          .setColor(0xff3333)
+          .setTitle('❌  Wager Failed')
+          .setDescription(`\`\`\`\n${err.message}\n\`\`\``);
+        await interaction.editReply({ embeds: [embed] });
       }
     }
   }
 
-  // Button Interactions
+  // ── BUTTONS ────────────────────────────────
   if (interaction.isButton()) {
+
+    // My Predictions
     if (interaction.customId === 'view_my_history') {
       await interaction.deferReply({ ephemeral: true });
       try {
         const user = await getOrCreateUser(interaction.user);
         const history = await getUserHistory(interaction.user.id);
-        
-        const activeBets = history.filter(b => b.matches.status === 'NS');
-        const pastBets = history.filter(b => b.matches.status !== 'NS');
+
+        const activeBets = history.filter(b => b.matches?.status === 'NS');
+        const pastBets = history.filter(b => b.matches?.winner);
+        const wins = pastBets.filter(b => b.team_picked === b.matches.winner).length;
 
         const embed = new EmbedBuilder()
-          .setTitle(`👤 Prediction History - ${user.display_name || user.username}`)
-          .setDescription(`**Wallet Balance:** ${user.tokens_balance} 🪙 tokens`)
-          .setColor('#0055ff');
+          .setColor(0x1a6bff)
+          .setTitle(`${user.display_name || user.username}  •  Prediction History`)
+          .setThumbnail(user.avatar_url || interaction.user.displayAvatarURL())
+          .addFields({
+            name: '💰  Balance',
+            value: `\`${fmt(user.tokens_balance)} tokens\``,
+            inline: true
+          },
+          {
+            name: '🏆  Record',
+            value: `\`${wins}W / ${pastBets.length - wins}L\``,
+            inline: true
+          });
 
         if (activeBets.length > 0) {
-          const list = activeBets.map(b => 
-            `• **${b.matches.home_team}** vs **${b.matches.away_team}**: Predicted **${b.team_picked.toUpperCase()}** with **${b.amount_wagered}** 🪙`
-          ).join('\n');
-          embed.addFields({ name: '🕒 Active Predictions', value: list });
+          embed.addFields({
+            name: '\u200b\n🕒  Active Wagers',
+            value: activeBets.map(b =>
+              `⚽ **${b.matches.home_team} vs ${b.matches.away_team}**\n` +
+              `   → **${b.team_picked.toUpperCase()}**  •  ${fmt(b.amount_wagered)}🪙`
+            ).join('\n\n')
+          });
         } else {
-          embed.addFields({ name: '🕒 Active Predictions', value: 'No current active predictions.' });
+          embed.addFields({ name: '\u200b\n🕒  Active Wagers', value: '*None yet — pick a match from the panel above!*' });
         }
 
         if (pastBets.length > 0) {
-          const lines = pastBets.slice(-10).map(b => {
-            const won = b.team_picked === b.matches.winner;
-            const resultEmoji = won ? '✅' : '❌';
-            return `${resultEmoji} **${b.matches.home_team}** vs **${b.matches.away_team}** (Picked ${b.team_picked.toUpperCase()}) - Wager: ${b.amount_wagered}`;
-          }).join('\n');
-          embed.addFields({ name: '📜 Recent History (Last 10)', value: lines });
+          embed.addFields({
+            name: '\u200b\n📜  Recent Results (Last 5)',
+            value: pastBets.slice(-5).reverse().map(b => {
+              const won = b.team_picked === b.matches.winner;
+              return `${won ? '✅' : '❌'}  **${b.matches.home_team} vs ${b.matches.away_team}**  •  ${b.team_picked.toUpperCase()}  (${fmt(b.amount_wagered)}🪙)`;
+            }).join('\n')
+          });
         }
 
+        embed.setFooter({ text: 'Use /profile for full stats' }).setTimestamp();
         await interaction.editReply({ embeds: [embed] });
       } catch (err) {
         console.error(err);
-        await interaction.editReply({ content: '❌ Failed to load history.' });
+        await interaction.editReply({ content: '❌  Failed to load history.' });
       }
     }
 
+    // How to Play / Rules
     if (interaction.customId === 'show_rules') {
       const embed = new EmbedBuilder()
-        .setTitle('🏆 Project Blue-Lock Game Rules')
+        .setColor(0xf1c40f)
+        .setTitle('📖  How to Play  •  Project Blue-Lock')
         .setDescription(
-          '**1. Payout Pool Split Formula**\n' +
-          'All bets on a match go into a pool. Winners split the pool proportionally based on their wagers:\n' +
-          '$$Payout = \\left(\\frac{Boosted Pool}{Winning Tokens}\\right) \\times Your Bet$$\n\n' +
-          '**2. Anti-Inflation Multipliers**\n' +
-          'To award high-risk strategies, underdog victories boost the total payout pool:\n' +
-          '• **Favorite wins** (>80% vote share): **1.0x** pool\n' +
-          '• **Standard wins** (50% - 80% share): **1.0x** pool\n' +
-          '• **Mild Upsets** (20% - 50% share): **1.25x** pool boost\n' +
-          '• **Miracle Jackpots** (<20% share): **1.5x** ultimate pool boost!\n\n' +
-          '**3. Free Vote System**\n' +
-          'If you bet **0 tokens**, it is a Free Vote. You do not dilute the pool, and a correct prediction awards a flat **+5 tokens**.'
+          '**You start with 1,000 tokens.** Predict match outcomes to win more.\n\u200b'
         )
-        .setColor('#ffd700'); // Gold
+        .addFields(
+          {
+            name: '1️⃣  Payout Formula',
+            value:
+              'Winners split the pool proportionally to what they wagered:\n' +
+              '```\nPayout = (Boosted Pool ÷ Winning Tokens) × Your Bet\n```'
+          },
+          {
+            name: '2️⃣  Upset Multipliers',
+            value:
+              '```\n> 80% vote share  →  1.0x  (favourite wins, no bonus)\n' +
+              '50–80%           →  1.0x  (standard split)\n' +
+              '20–50%           →  1.25x ⬆  (mild upset)\n' +
+              '< 20%            →  1.5x  🔥 (miracle jackpot)\n```'
+          },
+          {
+            name: '3️⃣  Free Votes',
+            value:
+              'Wager **0 tokens** to submit a Free Vote.\n' +
+              'Free votes don\'t dilute the main pool.\n' +
+              'A correct Free Vote earns a flat **+5 tokens**.'
+          },
+          {
+            name: '4️⃣  Editing Predictions',
+            value:
+              'You can change your prediction **any time before kickoff**.\n' +
+              'Just select the same match again — it will overwrite your previous pick.'
+          }
+        )
+        .setFooter({ text: 'Good luck! 🍀' });
 
       await interaction.reply({ embeds: [embed], ephemeral: true });
     }
   }
 });
 
+// ─────────────────────────────────────────────
+// START
+// ─────────────────────────────────────────────
+
 client.login(token).catch(err => {
-  console.error('CRITICAL: Discord login failed. Verify DISCORD_TOKEN in environment configuration.', err);
+  console.error('CRITICAL: Discord login failed. Check DISCORD_TOKEN in your .env file.\n', err.message);
 });
