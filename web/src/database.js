@@ -7,9 +7,13 @@
 require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
 
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+
+// Create client with fallbacks so a missing env variable doesn't crash Vercel at compile-time
 const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
+  supabaseUrl || 'https://placeholder.supabase.co',
+  supabaseKey || 'placeholder_key'
 );
 
 function avatarUrl(userId, hash) {
@@ -98,8 +102,8 @@ async function getSpyMetric(fixtureId) {
 function getMultiplier(voteShare) {
   if (voteShare > 0.80) return 1.0;
   if (voteShare >= 0.50) return 1.0;
-  if (voteShare >= 0.20) return 1.10; // Scaled down to 1.10
-  return 1.20; // Scaled down to 1.20
+  if (voteShare >= 0.20) return 1.10;
+  return 1.20;
 }
 
 async function calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, userId = null) {
@@ -119,15 +123,12 @@ async function calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, 
 
   const voteShare = totalPool > 0 ? winningTokens / totalPool : 0;
   
-  // Cap multiplier to 1.0 if draw, unanimous, or only 1 person placed a bet
   let multiplier = getMultiplier(voteShare);
   if (winningTokens === totalPool || teamPicked === 'draw') {
     multiplier = 1.0;
   }
 
   const boostedPool = totalPool * multiplier;
-
-  // Base payout addition: +5 tokens for wagers < 20, +20 for wagers >= 20
   const baseReward = amountWagered < 20 ? 5 : 20;
 
   const estimated = winningTokens > 0 
