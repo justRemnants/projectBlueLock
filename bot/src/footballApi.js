@@ -2,7 +2,8 @@
  * src/footballApi.js
  *
  * Rate-limit aware sync service configured for Football-Data.org v4 API.
- * Safely inspects headers (X-Requests-Available-Minute, X-RequestCounter-Reset) to handle throttling.
+ * Safely inspects headers (X-Requests-Available-Minute, X-RequestCounter-Reset) to handle throttling
+ * and filters out undecided placeholder matches to prevent database constraint errors.
  */
 
 require('dotenv').config();
@@ -37,7 +38,6 @@ async function getWithThrottling(url) {
 
     console.log(`[Football-Data API] Quota Remaining: ${requestsAvailable} req/min | Reset in: ${resetSeconds}s`);
 
-    // If quota drops near 0, log a warning
     if (requestsAvailable <= 1) {
       console.warn(`[Football-Data API Warning] Only ${requestsAvailable} requests left. Throttling reset in ${resetSeconds}s.`);
     }
@@ -76,7 +76,18 @@ async function syncFixtures() {
     };
   }
 
-  const upsertData = matches.map(m => {
+  // Filter out any tournament slots that do not have both team names decided yet (TBD matches)
+  const activeMatches = matches.filter(m => m.homeTeam?.name && m.awayTeam?.name);
+
+  if (activeMatches.length === 0) {
+    return {
+      success: false,
+      count: 0,
+      message: `Football-Data.org returned matches, but **0 of them have decided teams** (all are currently undecided or unassigned tournament slots).`
+    };
+  }
+
+  const upsertData = activeMatches.map(m => {
     // Map Football-Data status strings to local schema format
     let status = 'NS';
     if (m.status === 'FINISHED') status = 'FT';
