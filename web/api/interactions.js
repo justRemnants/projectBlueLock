@@ -2,7 +2,7 @@
  * web/api/interactions.js
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
- * Refactored to use native Node.js HTTP response methods for environment compatibility.
+ * Refactored to eliminate deferred responses, preventing serverless execution freezes.
  */
 
 require('dotenv').config();
@@ -40,14 +40,6 @@ function getRawBody(req) {
   });
 }
 
-async function editOriginal(token, data) {
-  await axios.patch(
-    `https://discord.com/api/v10/webhooks/${APP_ID}/${token}/messages/@original`,
-    data,
-    { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
-  );
-}
-
 async function editChannelMessage(channelId, messageId, data) {
   await axios.patch(
     `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
@@ -68,7 +60,13 @@ async function refreshPanel() {
 }
 
 function errorEmbed(msg) {
-  return { embeds: [{ color: COLORS.red, title: '❌  Error', description: `\`\`\`\n${msg}\n\`\`\`` }] };
+  return {
+    type: 4, // MESSAGE
+    data: {
+      flags: 64, // EPHEMERAL
+      embeds: [{ color: COLORS.red, title: '❌  Error', description: `\`\`\`\n${msg}\n\`\`\`` }]
+    }
+  };
 }
 
 const T = { PING: 1, COMMAND: 2, COMPONENT: 3, MODAL_SUBMIT: 5 };
@@ -78,86 +76,105 @@ const FLAGS = { EPHEMERAL: 64 };
 async function handleCommand(interaction, res) {
   const name = interaction.data.name;
   const user = interaction.member?.user || interaction.user;
-  const token = interaction.token;
+  const channelId = interaction.channel_id;
 
   if (name === 'setup-panel') {
-    sendJson(res, { type: R.DEFERRED_MESSAGE });
     try {
       const panelData = await buildMasterPanel();
-      const editRes = await axios.patch(
-        `https://discord.com/api/v10/webhooks/${APP_ID}/${token}/messages/@original`,
+      
+      // Post the panel directly to the channel using REST API
+      const response = await axios.post(
+        `https://discord.com/api/v10/channels/${channelId}/messages`,
         panelData,
         { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
       );
-      await savePanelMessage(editRes.data.channel_id, editRes.data.id);
+
+      await savePanelMessage(channelId, response.data.id);
+
+      return sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          flags: FLAGS.EPHEMERAL,
+          content: '✅  Master panel initialized and configured successfully.'
+        }
+      });
     } catch (err) {
       console.error('setup-panel error:', err.response?.data || err.message);
-      await editOriginal(token, errorEmbed('Failed to build the panel. Check server logs.'));
+      return sendJson(res, errorEmbed('Failed to build the panel. Check server logs.'));
     }
-    return;
   }
 
   if (name === 'sync-matches') {
-    sendJson(res, { type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
     const useMock = interaction.data.options?.find(o => o.name === 'mock')?.value ?? false;
     try {
       const result = useMock ? await syncMockFixtures() : await syncFixtures();
       const color = result.success ? COLORS.green : COLORS.red;
-      await editOriginal(token, {
-        embeds: [{
-          color,
-          title: result.success ? '✅  Sync Complete' : '⚠️  Sync Returned No Data',
-          description: result.message,
-          timestamp: new Date().toISOString()
-        }]
+
+      sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          flags: FLAGS.EPHEMERAL,
+          embeds: [{
+            color,
+            title: result.success ? '✅  Sync Complete' : '⚠️  Sync Returned No Data',
+            description: result.message,
+            timestamp: new Date().toISOString()
+          }]
+        }
       });
-      if (result.success) await refreshPanel();
+
+      if (result.success) {
+        await refreshPanel();
+      }
     } catch (err) {
-      await editOriginal(token, errorEmbed(err.message));
+      return sendJson(res, errorEmbed(err.message));
     }
     return;
   }
 
   if (name === 'check-api') {
-    sendJson(res, { type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
     try {
       const status = await checkApiStatus();
-      await editOriginal(token, {
-        embeds: [{
-          color: status.ok ? COLORS.green : COLORS.red,
-          title: '🔍  API-Football Status Check',
-          description: status.message,
-          timestamp: new Date().toISOString()
-        }]
+      return sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          flags: FLAGS.EPHEMERAL,
+          embeds: [{
+            color: status.ok ? COLORS.green : COLORS.red,
+            title: '🔍  API-Football Status Check',
+            description: status.message,
+            timestamp: new Date().toISOString()
+          }]
+        }
       });
     } catch (err) {
-      await editOriginal(token, errorEmbed(err.message));
+      return sendJson(res, errorEmbed(err.message));
     }
-    return;
   }
 
   if (name === 'profile') {
-    sendJson(res, { type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
     try {
       const dbUser = await getOrCreateUser(user);
       const history = await getUserHistory(user.id);
       const activeBets = history.filter(b => b.matches?.status === 'NS');
       const pastBets = history.filter(b => b.matches?.winner);
 
-      await editOriginal(token, {
-        embeds: [buildProfileEmbed({ user: dbUser, activeBets, pastBets })]
+      return sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          flags: FLAGS.EPHEMERAL,
+          embeds: [buildProfileEmbed({ user: dbUser, activeBets, pastBets })]
+        }
       });
     } catch (err) {
-      await editOriginal(token, errorEmbed(err.message));
+      return sendJson(res, errorEmbed(err.message));
     }
-    return;
   }
 }
 
 async function handleComponent(interaction, res) {
   const customId = interaction.data.custom_id;
   const user = interaction.member?.user || interaction.user;
-  const token = interaction.token;
 
   if (customId === 'select_match') {
     const fixtureId = interaction.data.values[0];
@@ -165,19 +182,25 @@ async function handleComponent(interaction, res) {
       return sendJson(res, { type: R.DEFERRED_UPDATE });
     }
 
-    sendJson(res, { type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
     try {
       const dbUser = await getOrCreateUser(user);
       const matches = await getActiveMatches();
       const match = matches.find(m => m.fixture_id === fixtureId);
-      if (!match) return await editOriginal(token, errorEmbed('Match not found.'));
+      if (!match) return sendJson(res, errorEmbed('Match not found.'));
 
       const detail = await buildMatchDetail(match, dbUser);
-      await editOriginal(token, detail);
+      
+      return sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          flags: FLAGS.EPHEMERAL,
+          embeds: detail.embeds,
+          components: detail.components
+        }
+      });
     } catch (err) {
-      await editOriginal(token, errorEmbed(err.message));
+      return sendJson(res, errorEmbed(err.message));
     }
-    return;
   }
 
   if (customId.startsWith('select_prediction:')) {
@@ -201,20 +224,22 @@ async function handleComponent(interaction, res) {
   }
 
   if (customId === 'view_my_history') {
-    sendJson(res, { type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
     try {
       const dbUser = await getOrCreateUser(user);
       const history = await getUserHistory(user.id);
       const activeBets = history.filter(b => b.matches?.status === 'NS');
       const pastBets = history.filter(b => b.matches?.winner);
 
-      await editOriginal(token, {
-        embeds: [buildProfileEmbed({ user: dbUser, activeBets, pastBets })]
+      return sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          flags: FLAGS.EPHEMERAL,
+          embeds: [buildProfileEmbed({ user: dbUser, activeBets, pastBets })]
+        }
       });
     } catch (err) {
-      await editOriginal(token, errorEmbed(err.message));
+      return sendJson(res, errorEmbed(err.message));
     }
-    return;
   }
 
   if (customId === 'show_rules') {
@@ -254,17 +279,14 @@ async function handleComponent(interaction, res) {
 async function handleModal(interaction, res) {
   const customId = interaction.data.custom_id;
   const user = interaction.member?.user || interaction.user;
-  const token = interaction.token;
 
   if (customId.startsWith('wager_modal:')) {
-    sendJson(res, { type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
-
     const [, fixtureId, teamPicked] = customId.split(':');
     const amountStr = interaction.data.components[0].components[0].value;
     const amountWagered = parseInt(amountStr, 10);
 
     if (isNaN(amountWagered) || amountWagered < 0) {
-      return await editOriginal(token, errorEmbed('Invalid amount. Enter a whole number ≥ 0.'));
+      return sendJson(res, errorEmbed('Invalid amount. Enter a whole number ≥ 0.'));
     }
 
     try {
@@ -273,20 +295,25 @@ async function handleModal(interaction, res) {
       const matches = await getActiveMatches();
       const match = matches.find(m => m.fixture_id === fixtureId);
 
-      await editOriginal(token, {
-        embeds: [buildBetConfirmEmbed({
-          match,
-          teamPicked,
-          amountWagered,
-          estEarnings,
-          newBalance: result.newBalance,
-          isUpdate: !!result.previousBet
-        })]
+      sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          flags: FLAGS.EPHEMERAL,
+          embeds: [buildBetConfirmEmbed({
+            match,
+            teamPicked,
+            amountWagered,
+            estEarnings,
+            newBalance: result.newBalance,
+            isUpdate: !!result.previousBet
+          })]
+        }
       });
 
+      // Update panel configuration in background
       await refreshPanel();
     } catch (err) {
-      await editOriginal(token, errorEmbed(err.message));
+      return sendJson(res, errorEmbed(err.message));
     }
   }
 }
