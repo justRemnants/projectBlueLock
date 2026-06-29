@@ -2,6 +2,7 @@
  * web/api/interactions.js
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
+ * Refactored to use native Node.js HTTP response methods for environment compatibility.
  */
 
 require('dotenv').config();
@@ -22,6 +23,13 @@ const {
 const PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY;
 const BOT_TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_CLIENT_ID;
+
+// Helper to handle JSON responses safely without Express decorations
+function sendJson(res, data, statusCode = 200) {
+  res.statusCode = statusCode;
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(data));
+}
 
 function getRawBody(req) {
   return new Promise((resolve, reject) => {
@@ -73,7 +81,7 @@ async function handleCommand(interaction, res) {
   const token = interaction.token;
 
   if (name === 'setup-panel') {
-    res.json({ type: R.DEFERRED_MESSAGE });
+    sendJson(res, { type: R.DEFERRED_MESSAGE });
     try {
       const panelData = await buildMasterPanel();
       const editRes = await axios.patch(
@@ -90,7 +98,7 @@ async function handleCommand(interaction, res) {
   }
 
   if (name === 'sync-matches') {
-    res.json({ type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
+    sendJson(res, { type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
     const useMock = interaction.data.options?.find(o => o.name === 'mock')?.value ?? false;
     try {
       const result = useMock ? await syncMockFixtures() : await syncFixtures();
@@ -111,7 +119,7 @@ async function handleCommand(interaction, res) {
   }
 
   if (name === 'check-api') {
-    res.json({ type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
+    sendJson(res, { type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
     try {
       const status = await checkApiStatus();
       await editOriginal(token, {
@@ -129,7 +137,7 @@ async function handleCommand(interaction, res) {
   }
 
   if (name === 'profile') {
-    res.json({ type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
+    sendJson(res, { type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
     try {
       const dbUser = await getOrCreateUser(user);
       const history = await getUserHistory(user.id);
@@ -153,9 +161,11 @@ async function handleComponent(interaction, res) {
 
   if (customId === 'select_match') {
     const fixtureId = interaction.data.values[0];
-    if (fixtureId === 'none') return res.json({ type: R.DEFERRED_UPDATE });
+    if (fixtureId === 'none') {
+      return sendJson(res, { type: R.DEFERRED_UPDATE });
+    }
 
-    res.json({ type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
+    sendJson(res, { type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
     try {
       const dbUser = await getOrCreateUser(user);
       const matches = await getActiveMatches();
@@ -174,7 +184,8 @@ async function handleComponent(interaction, res) {
     const fixtureId = customId.split(':')[1];
     const prediction = interaction.data.values[0];
 
-    return res.json(
+    return sendJson(
+      res,
       modal({
         customId: `wager_modal:${fixtureId}:${prediction}`,
         title: 'Place Your Wager',
@@ -190,7 +201,7 @@ async function handleComponent(interaction, res) {
   }
 
   if (customId === 'view_my_history') {
-    res.json({ type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
+    sendJson(res, { type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
     try {
       const dbUser = await getOrCreateUser(user);
       const history = await getUserHistory(user.id);
@@ -207,7 +218,7 @@ async function handleComponent(interaction, res) {
   }
 
   if (customId === 'show_rules') {
-    return res.json({
+    return sendJson(res, {
       type: R.MESSAGE,
       data: {
         flags: FLAGS.EPHEMERAL,
@@ -246,7 +257,7 @@ async function handleModal(interaction, res) {
   const token = interaction.token;
 
   if (customId.startsWith('wager_modal:')) {
-    res.json({ type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
+    sendJson(res, { type: R.DEFERRED_MESSAGE, data: { flags: FLAGS.EPHEMERAL } });
 
     const [, fixtureId, teamPicked] = customId.split(':');
     const amountStr = interaction.data.components[0].components[0].value;
@@ -281,27 +292,34 @@ async function handleModal(interaction, res) {
 }
 
 async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
+  if (req.method !== 'POST') {
+    res.statusCode = 405;
+    res.end('Method Not Allowed');
+    return;
+  }
 
   const rawBody = await getRawBody(req);
   const sig = req.headers['x-signature-ed25519'];
   const ts = req.headers['x-signature-timestamp'];
 
   if (!verifyKey(rawBody, sig, ts, PUBLIC_KEY)) {
-    return res.status(401).send('Invalid request signature');
+    res.statusCode = 401;
+    res.end('Invalid request signature');
+    return;
   }
 
   const interaction = JSON.parse(rawBody.toString('utf-8'));
 
   if (interaction.type === T.PING) {
-    return res.json({ type: R.PONG });
+    return sendJson(res, { type: R.PONG });
   }
 
   if (interaction.type === T.COMMAND) return handleCommand(interaction, res);
   if (interaction.type === T.COMPONENT) return handleComponent(interaction, res);
   if (interaction.type === T.MODAL_SUBMIT) return handleModal(interaction, res);
 
-  return res.status(400).send('Unknown interaction type');
+  res.statusCode = 400;
+  res.end('Unknown interaction type');
 }
 
 module.exports = handler;
