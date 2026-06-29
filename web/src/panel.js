@@ -1,5 +1,7 @@
 /**
- * panel.js — Builds all Discord embeds and component JSON for the bot.
+ * web/src/panel.js
+ *
+ * Builds all Discord embeds and component JSON for the bot.
  * Uses plain objects (no discord.js) so it works in serverless Vercel functions.
  */
 
@@ -34,8 +36,6 @@ function getAustralianDayLabel(kickoffStr) {
   return null;
 }
 
-// ─── Embed builders (plain JSON) ─────────────────────────────────────────────
-
 function embed({ color = COLORS.blue, title, description, fields = [], footer, thumbnail, timestamp = true }) {
   return {
     color,
@@ -47,8 +47,6 @@ function embed({ color = COLORS.blue, title, description, fields = [], footer, t
     ...(timestamp ? { timestamp: new Date().toISOString() } : {})
   };
 }
-
-// ─── Component builders (plain JSON) ─────────────────────────────────────────
 
 function actionRow(components) {
   return { type: 1, components };
@@ -70,7 +68,6 @@ function selectMenu({ customId, placeholder, options, disabled = false }) {
 }
 
 function button({ customId, label, emoji, style = 2 }) {
-  // style: 1=Primary(blue) 2=Secondary(grey) 3=Success(green) 4=Danger(red)
   return {
     type: 2,
     custom_id: customId,
@@ -102,8 +99,6 @@ function modal({ customId, title, inputs }) {
     }
   };
 }
-
-// ─── Master Panel ─────────────────────────────────────────────────────────────
 
 async function buildMasterPanel() {
   const matches = await getActiveMatches();
@@ -173,7 +168,6 @@ async function buildMasterPanel() {
     footer: `🕒 Last updated · ${aestTime} AEST  ·  Use /profile to view your wallet`
   });
 
-  // Dropdown (max 25 options)
   const menuOptions = upcoming.slice(0, 25).map(m => ({
     label: `${m.home_team} vs ${m.away_team}`,
     value: m.fixture_id,
@@ -195,8 +189,6 @@ async function buildMasterPanel() {
 
   return { embeds: [panelEmbed], components: [row1, row2] };
 }
-
-// ─── Match Detail Panel (shown when picking a match) ─────────────────────────
 
 async function buildMatchDetail(match, user) {
   const spy = await getSpyMetric(match.fixture_id);
@@ -239,8 +231,6 @@ async function buildMatchDetail(match, user) {
   return { embeds: [matchEmbed], components: [actionRow([predMenu])] };
 }
 
-// ─── Bet Confirmation Embed ───────────────────────────────────────────────────
-
 function buildBetConfirmEmbed({ match, teamPicked, amountWagered, estEarnings, newBalance, isUpdate }) {
   const pickEmoji = { home: '🏠', draw: '🤝', away: '✈️' }[teamPicked] || '🔮';
   const isFreeVote = amountWagered === 0;
@@ -248,8 +238,8 @@ function buildBetConfirmEmbed({ match, teamPicked, amountWagered, estEarnings, n
 
   let multiplierStr;
   if (isFreeVote) multiplierStr = 'Free Vote';
-  else if (estEarnings.multiplier >= 1.5) multiplierStr = '🔥 1.5x — MIRACLE JACKPOT';
-  else if (estEarnings.multiplier >= 1.25) multiplierStr = '⬆️ 1.25x — Underdog Boost';
+  else if (estEarnings.multiplier >= 1.20) multiplierStr = '🔥 1.20x — MIRACLE JACKPOT';
+  else if (estEarnings.multiplier >= 1.10) multiplierStr = '⬆️ 1.10x — Underdog Boost';
   else multiplierStr = `1.0x — Standard Split`;
 
   return embed({
@@ -268,8 +258,6 @@ function buildBetConfirmEmbed({ match, teamPicked, amountWagered, estEarnings, n
     footer: 'You can change your prediction any time before kickoff.'
   });
 }
-
-// ─── Profile Embed ────────────────────────────────────────────────────────────
 
 function buildProfileEmbed({ user, activeBets, pastBets }) {
   const wins = pastBets.filter(b => b.team_picked === b.matches?.winner).length;

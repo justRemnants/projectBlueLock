@@ -1,3 +1,9 @@
+/**
+ * bot/index.js
+ *
+ * Persistent Bot Event Loop — suitable for JustRunMy.App or other running processes.
+ */
+
 const {
   Client,
   GatewayIntentBits,
@@ -36,13 +42,6 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
 });
 
-// ─────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────
-
-/**
- * Returns 'Today', 'Tomorrow', or null for a kickoff time in AEST/AEDT.
- */
 function getAustralianDayLabel(kickoffStr) {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Australia/Sydney',
@@ -57,34 +56,19 @@ function getAustralianDayLabel(kickoffStr) {
   return null;
 }
 
-/**
- * Build a progress bar string for the Spy Metric.
- * e.g.  ██████░░░░ 60%
- */
 function progressBar(percent, length = 10) {
   const filled = Math.round((percent / 100) * length);
   const empty = length - filled;
   return '█'.repeat(filled) + '░'.repeat(empty);
 }
 
-/**
- * Format a token number with commas.
- */
 function fmt(n) {
   return n.toLocaleString();
 }
 
-// ─────────────────────────────────────────────
-// PANEL BUILDER
-// ─────────────────────────────────────────────
-
-/**
- * Build the Master Events Panel embed and components.
- */
 async function buildMasterPanel() {
   const matches = await getActiveMatches();
 
-  // Show upcoming (NS) matches that are Today or Tomorrow in AEST/AEDT
   const upcomingMatches = matches.filter(m => {
     if (m.status !== 'NS') return false;
     const label = getAustralianDayLabel(m.kickoff_time);
@@ -103,7 +87,7 @@ async function buildMasterPanel() {
     .setDescription(
       '> Use fake tokens to predict real match outcomes.\n' +
       '> The bigger the upset, the bigger the jackpot.\n' +
-      '\u200b'  // zero-width space for spacing
+      '\u200b'
     )
     .setFooter({ text: `🕒 Last updated · ${aestTime} AEST  •  Use /profile to view your wallet` })
     .setTimestamp();
@@ -157,7 +141,6 @@ async function buildMasterPanel() {
     }
   }
 
-  // ── Dropdown ──
   const selectMenu = new StringSelectMenuBuilder()
     .setCustomId('select_match')
     .setPlaceholder('⚽  Select a match to place or edit your prediction...');
@@ -202,14 +185,6 @@ async function buildMasterPanel() {
   return { embeds: [embed], components: [row1, row2] };
 }
 
-// ─────────────────────────────────────────────
-// AUTO-UPDATE PANEL HELPER
-// ─────────────────────────────────────────────
-
-/**
- * Silently refresh the pinned Master Panel message in the events channel.
- * Called after every bet, sync, or significant interaction.
- */
 async function refreshPanel() {
   try {
     const config = await getPanelMessage();
@@ -224,14 +199,9 @@ async function refreshPanel() {
     const panelData = await buildMasterPanel();
     await message.edit(panelData);
   } catch (err) {
-    // Non-fatal: panel refresh failures should never crash the bot
     console.warn('Panel auto-refresh skipped:', err.message);
   }
 }
-
-// ─────────────────────────────────────────────
-// SLASH COMMAND REGISTRATION
-// ─────────────────────────────────────────────
 
 client.once('ready', async () => {
   console.log(`🤖  Logged in as ${client.user.tag}`);
@@ -267,23 +237,15 @@ client.once('ready', async () => {
   }
 });
 
-// ─────────────────────────────────────────────
-// INTERACTION HANDLER
-// ─────────────────────────────────────────────
-
 client.on('interactionCreate', async interaction => {
-
-  // ── SLASH COMMANDS ─────────────────────────
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
-    // /setup-panel
     if (commandName === 'setup-panel') {
       await interaction.deferReply();
       try {
         const panelData = await buildMasterPanel();
         const msg = await interaction.editReply(panelData);
-        // Save the channel + message IDs so refreshPanel() can find it
         await savePanelMessage(msg.channelId, msg.id);
         console.log(`✅  Panel saved — Channel: ${msg.channelId} | Message: ${msg.id}`);
       } catch (err) {
@@ -292,7 +254,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // /sync-matches
     if (commandName === 'sync-matches') {
       await interaction.deferReply({ ephemeral: true });
       const useMock = interaction.options.getBoolean('mock') ?? false;
@@ -307,7 +268,6 @@ client.on('interactionCreate', async interaction => {
               .setTimestamp()
           ]
         });
-        // Refresh the panel after a sync
         await refreshPanel();
       } catch (err) {
         await interaction.editReply({
@@ -321,7 +281,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // /profile
     if (commandName === 'profile') {
       await interaction.deferReply({ ephemeral: true });
       try {
@@ -379,10 +338,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── DROPDOWNS ──────────────────────────────
   if (interaction.isStringSelectMenu()) {
-
-    // Match selector
     if (interaction.customId === 'select_match') {
       const fixtureId = interaction.values[0];
       if (fixtureId === 'none') return interaction.deferUpdate();
@@ -457,7 +413,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // Prediction selector → launch modal
     if (interaction.customId.startsWith('select_prediction:')) {
       const fixtureId = interaction.customId.split(':')[1];
       const prediction = interaction.values[0];
@@ -480,7 +435,6 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── MODAL SUBMISSIONS ──────────────────────
   if (interaction.isModalSubmit()) {
     if (interaction.customId.startsWith('wager_modal:')) {
       await interaction.deferReply({ ephemeral: true });
@@ -546,8 +500,6 @@ client.on('interactionCreate', async interaction => {
           .setTimestamp();
 
         await interaction.editReply({ embeds: [embed] });
-
-        // Auto-refresh the panel to show updated Spy Metric
         await refreshPanel();
       } catch (err) {
         console.error(err);
@@ -560,10 +512,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // ── BUTTONS ────────────────────────────────
   if (interaction.isButton()) {
-
-    // My Predictions
     if (interaction.customId === 'view_my_history') {
       await interaction.deferReply({ ephemeral: true });
       try {
@@ -619,28 +568,27 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // How to Play / Rules
     if (interaction.customId === 'show_rules') {
       const embed = new EmbedBuilder()
         .setColor(0xf1c40f)
         .setTitle('📖  How to Play  •  Project Blue-Lock')
         .setDescription(
-          '**You start with 1,000 tokens.** Predict match outcomes to win more.\n\u200b'
+          '**You start with 500 tokens.** Predict match outcomes to win more.\n\u200b'
         )
         .addFields(
           {
             name: '1️⃣  Payout Formula',
             value:
               'Winners split the pool proportionally to what they wagered:\n' +
-              '```\nPayout = (Boosted Pool ÷ Winning Tokens) × Your Bet\n```'
+              '```\nPayout = (Boosted Pool ÷ Winning Tokens) × Your Bet + Base Reward\n```'
           },
           {
             name: '2️⃣  Upset Multipliers',
             value:
               '```\n> 80% vote share  →  1.0x  (favourite wins, no bonus)\n' +
               '50–80%           →  1.0x  (standard split)\n' +
-              '20–50%           →  1.25x ⬆  (mild upset)\n' +
-              '< 20%            →  1.5x  🔥 (miracle jackpot)\n```'
+              '20–50%           →  1.10x ⬆  (mild upset)\n' +
+              '< 20%            →  1.20x  🔥 (miracle jackpot)\n```'
           },
           {
             name: '3️⃣  Free Votes',
@@ -650,8 +598,9 @@ client.on('interactionCreate', async interaction => {
               'A correct Free Vote earns a flat **+5 tokens**.'
           },
           {
-            name: '4️⃣  Editing Predictions',
+            name: '4️⃣  Base Rewards & Editing',
             value:
+              'Winning bets receive a **Base Reward** (+5 tokens for bets < 20, +20 tokens for bets ≥ 20).\n' +
               'You can change your prediction **any time before kickoff**.\n' +
               'Just select the same match again — it will overwrite your previous pick.'
           }
@@ -662,10 +611,6 @@ client.on('interactionCreate', async interaction => {
     }
   }
 });
-
-// ─────────────────────────────────────────────
-// START
-// ─────────────────────────────────────────────
 
 client.login(token).catch(err => {
   console.error('CRITICAL: Discord login failed. Check DISCORD_TOKEN in your .env file.\n', err.message);

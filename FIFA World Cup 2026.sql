@@ -1,23 +1,21 @@
 -- =========================================================================
 -- PROJECT BLUE-LOCK: FULL DATABASE INIT SCRIPT WITH RLS POLICIES
--- Save this file as 'schema.sql' in your project root.
 -- Run this entire script in the Supabase SQL Editor.
 -- =========================================================================
 
--- 1. CLEANUP
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 DROP FUNCTION IF EXISTS public.handle_new_user();
 DROP TABLE IF EXISTS public.bets CASCADE;
 DROP TABLE IF EXISTS public.matches CASCADE;
 DROP TABLE IF EXISTS public.users CASCADE;
+DROP TABLE IF EXISTS public.system_config CASCADE;
 
--- 2. CREATE TABLES
 CREATE TABLE public.users (
     discord_id TEXT PRIMARY KEY,
     username TEXT NOT NULL,
     display_name TEXT,
     avatar_url TEXT,
-    tokens_balance INTEGER DEFAULT 1000 NOT NULL
+    tokens_balance INTEGER DEFAULT 500 NOT NULL -- Updated to 500
 );
 
 CREATE TABLE public.matches (
@@ -34,11 +32,15 @@ CREATE TABLE public.bets (
     user_id TEXT REFERENCES public.users(discord_id) ON DELETE CASCADE,
     fixture_id TEXT REFERENCES public.matches(fixture_id) ON DELETE CASCADE,
     team_picked TEXT NOT NULL CHECK (team_picked IN ('home', 'away', 'draw')),
-    amount_wagered INTEGER NOT NULL CHECK (amount_wagered >= 0), -- Just ensures no negative bets
+    amount_wagered INTEGER NOT NULL CHECK (amount_wagered >= 0),
     CONSTRAINT unique_user_fixture UNIQUE (user_id, fixture_id)
 );
 
--- 3. AUTOMATED AUTH SYNCHRONIZATION FUNCTION
+CREATE TABLE public.system_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -48,7 +50,7 @@ BEGIN
         coalesce(new.raw_user_meta_data->>'custom_claims'->>'username', new.raw_user_meta_data->>'full_name', 'Player'),
         coalesce(new.raw_user_meta_data->>'name', new.raw_user_meta_data->>'full_name', 'New Competitor'),
         coalesce(new.raw_user_meta_data->>'avatar_url', null),
-        1000
+        500 -- Updated to 500 starting balance
     )
     ON CONFLICT (discord_id) DO UPDATE
     SET 
@@ -63,34 +65,14 @@ CREATE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users
     FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
 
--- =========================================================================
--- 4. ROW LEVEL SECURITY (RLS) & POLICIES
--- =========================================================================
-
--- Enable RLS on all tables
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.matches ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.bets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.system_config ENABLE ROW LEVEL SECURITY;
 
--- USERS POLICIES
--- Anyone can see the leaderboard standings
-CREATE POLICY "Allow public read access to profiles" ON public.users 
-    FOR SELECT USING (true);
-
--- Only the server admin or system service role can directly modify balances (handled via backend)
-CREATE POLICY "Allow update from authenticated service only" ON public.users 
-    FOR UPDATE USING (auth.role() = 'service_role');
-
--- MATCHES POLICIES
--- Anyone can see upcoming and finished matches
-CREATE POLICY "Allow public read access to matches" ON public.matches 
-    FOR SELECT USING (true);
-
--- BETS POLICIES
--- Anyone can see the public betting feed analytics
-CREATE POLICY "Allow public read access to bets" ON public.bets 
-    FOR SELECT USING (true);
-
--- Users can only place or modify their own bets (their web user ID must match the bet's user_id)
-CREATE POLICY "Users can manage their own wagers" ON public.bets
-    FOR ALL USING (auth.uid()::text = user_id);
+CREATE POLICY "Allow public read access to profiles" ON public.users FOR SELECT USING (true);
+CREATE POLICY "Allow update from authenticated service only" ON public.users FOR UPDATE USING (auth.role() = 'service_role');
+CREATE POLICY "Allow public read access to matches" ON public.matches FOR SELECT USING (true);
+CREATE POLICY "Allow public read access to bets" ON public.bets FOR SELECT USING (true);
+CREATE POLICY "Users can manage their own wagers" ON public.bets FOR ALL USING (auth.uid()::text = user_id);
+CREATE POLICY "Service role full access to config" ON public.system_config FOR ALL USING (auth.role() = 'service_role');

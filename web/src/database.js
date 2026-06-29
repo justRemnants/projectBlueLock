@@ -1,3 +1,9 @@
+/**
+ * web/src/database.js
+ *
+ * Database helpers optimized for JSON interaction payloads received via webhook.
+ */
+
 require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
 
@@ -6,14 +12,12 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// Discord CDN avatar URL builder (no discord.js needed)
 function avatarUrl(userId, hash) {
   if (!hash) return null;
   return `https://cdn.discordapp.com/avatars/${userId}/${hash}.png?size=256`;
 }
 
 async function getOrCreateUser(user) {
-  // user = raw Discord user object from interaction payload
   const avatarHash = user.avatar;
   const displayName = user.global_name || user.username;
 
@@ -31,7 +35,7 @@ async function getOrCreateUser(user) {
         username: user.username,
         display_name: displayName,
         avatar_url: avatarUrl(user.id, avatarHash),
-        tokens_balance: 1000
+        tokens_balance: 500 // Updated starting balance to 500
       })
       .select('*')
       .single();
@@ -41,7 +45,6 @@ async function getOrCreateUser(user) {
     throw error;
   }
 
-  // Sync profile fields that may have changed
   const updates = {};
   if (data.username !== user.username) updates.username = user.username;
   if (data.display_name !== displayName) updates.display_name = displayName;
@@ -95,8 +98,8 @@ async function getSpyMetric(fixtureId) {
 function getMultiplier(voteShare) {
   if (voteShare > 0.80) return 1.0;
   if (voteShare >= 0.50) return 1.0;
-  if (voteShare >= 0.20) return 1.25;
-  return 1.5;
+  if (voteShare >= 0.20) return 1.10; // Scaled down to 1.10
+  return 1.20; // Scaled down to 1.20
 }
 
 async function calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, userId = null) {
@@ -115,9 +118,21 @@ async function calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, 
   });
 
   const voteShare = totalPool > 0 ? winningTokens / totalPool : 0;
-  const multiplier = getMultiplier(voteShare);
+  
+  // Cap multiplier to 1.0 if draw, unanimous, or only 1 person placed a bet
+  let multiplier = getMultiplier(voteShare);
+  if (winningTokens === totalPool || teamPicked === 'draw') {
+    multiplier = 1.0;
+  }
+
   const boostedPool = totalPool * multiplier;
-  const estimated = winningTokens > 0 ? Math.round((boostedPool / winningTokens) * amountWagered) : amountWagered;
+
+  // Base payout addition: +5 tokens for wagers < 20, +20 for wagers >= 20
+  const baseReward = amountWagered < 20 ? 5 : 20;
+
+  const estimated = winningTokens > 0 
+    ? Math.round((boostedPool / winningTokens) * amountWagered) + baseReward
+    : amountWagered + baseReward;
 
   return { estimated, multiplier, voteShare, isFreeVote: false };
 }
