@@ -5,8 +5,5 @@
       "path": "/api/cron/sync",
       "schedule": "0 12 * * *"
     }
-  ],
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/$1" }
   ]
 }
