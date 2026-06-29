@@ -222,9 +222,9 @@ async function buildMatchDetail(match, user) {
     customId: `select_prediction:${match.fixture_id}`,
     placeholder: '🔮  Choose your prediction...',
     options: [
-      { label: `Home Win — ${match.home_team}`, value: 'home', emoji: '🏠' },
+      { label: `${match.home_team} Win`, value: 'home', emoji: '⚽' },
       { label: 'Draw', value: 'draw', emoji: '🤝' },
-      { label: `Away Win — ${match.away_team}`, value: 'away', emoji: '✈️' }
+      { label: `${match.away_team} Win`, value: 'away', emoji: '⚽' }
     ]
   });
 
@@ -232,9 +232,15 @@ async function buildMatchDetail(match, user) {
 }
 
 function buildBetConfirmEmbed({ match, teamPicked, amountWagered, estEarnings, newBalance, isUpdate }) {
-  const pickEmoji = { home: '🏠', draw: '🤝', away: '✈️' }[teamPicked] || '🔮';
+  const pickEmoji = { home: '⚽', draw: '🤝', away: '⚽' }[teamPicked] || '🔮';
   const isFreeVote = amountWagered === 0;
   const ts = Math.floor(new Date(match.kickoff_time).getTime() / 1000);
+
+  const displayPick = teamPicked === 'home' 
+    ? match.home_team.toUpperCase() 
+    : teamPicked === 'away' 
+      ? match.away_team.toUpperCase() 
+      : 'DRAW';
 
   let multiplierStr;
   if (isFreeVote) multiplierStr = 'Free Vote';
@@ -242,14 +248,18 @@ function buildBetConfirmEmbed({ match, teamPicked, amountWagered, estEarnings, n
   else if (estEarnings.multiplier >= 1.10) multiplierStr = '⬆️ 1.10x — Underdog Boost';
   else multiplierStr = `1.0x — Standard Split`;
 
+  const isHomeOrAway = teamPicked === 'home' || teamPicked === 'away';
+  const refundNote = (!isFreeVote && isHomeOrAway) ? '\n*Note: If this match ends in a Draw, your wager will be fully refunded.*' : '';
+
   return embed({
     color: isFreeVote ? COLORS.purple : COLORS.green,
     title: isUpdate ? '🔄  Prediction Updated' : '✅  Prediction Locked In',
     description:
       `**${match.home_team}  🆚  ${match.away_team}**\n` +
-      `<t:${ts}:R>\n\u200b`,
+      `<t:${ts}:R>\n\u200b` +
+      refundNote,
     fields: [
-      { name: `${pickEmoji}  Pick`, value: `\`\`\`\n${teamPicked.toUpperCase()}\n\`\`\``, inline: true },
+      { name: `${pickEmoji}  Pick`, value: `\`\`\`\n${displayPick}\n\`\`\``, inline: true },
       { name: '🪙  Wagered', value: `\`\`\`\n${isFreeVote ? 'Free Vote' : fmt(amountWagered) + ' tokens'}\n\`\`\``, inline: true },
       { name: '📈  Est. Return', value: `\`\`\`\n${isFreeVote ? '+5 tokens' : fmt(estEarnings.estimated) + ' tokens'}\n\`\`\``, inline: true },
       { name: '⚡  Multiplier', value: multiplierStr, inline: true },
@@ -261,20 +271,27 @@ function buildBetConfirmEmbed({ match, teamPicked, amountWagered, estEarnings, n
 
 function buildProfileEmbed({ user, activeBets, pastBets }) {
   const wins = pastBets.filter(b => b.team_picked === b.matches?.winner).length;
+  const refunds = pastBets.filter(b => b.matches?.winner === 'draw' && b.team_picked !== 'draw').length;
+  const losses = pastBets.length - wins - refunds;
   const acc = pastBets.length > 0 ? Math.round((wins / pastBets.length) * 100) : 0;
 
   const fields = [
     { name: '💰  Wallet', value: `\`\`\`\n${fmt(user.tokens_balance)} tokens\n\`\`\``, inline: true },
-    { name: '🏆  Win Rate', value: `\`\`\`\n${wins}W / ${pastBets.length - wins}L  (${acc}%)\n\`\`\``, inline: true }
+    { name: '🏆  Record', value: `\`\`\`\n${wins}W / ${losses}L / ${refunds}R  (${acc}%)\n\`\`\``, inline: true }
   ];
 
   if (activeBets.length > 0) {
     fields.push({
       name: '\u200b\n🕒  Active Wagers',
-      value: activeBets.map(b =>
-        `⚽ **${b.matches.home_team} vs ${b.matches.away_team}**\n` +
-        `   Picked **${b.team_picked.toUpperCase()}**  ·  Wager: **${fmt(b.amount_wagered)}🪙**`
-      ).join('\n\n')
+      value: activeBets.map(b => {
+        const displayPick = b.team_picked === 'home' 
+          ? (b.matches?.home_team || 'HOME') 
+          : b.team_picked === 'away' 
+            ? (b.matches?.away_team || 'AWAY') 
+            : 'DRAW';
+        return `⚽ **${b.matches?.home_team} vs ${b.matches?.away_team}**\n` +
+               `   Picked **${displayPick.toUpperCase()}**  ·  Wager: **${fmt(b.amount_wagered)}🪙**`;
+      }).join('\n\n')
     });
   }
 
@@ -282,24 +299,8 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
     fields.push({
       name: '\u200b\n📜  Recent Results',
       value: pastBets.slice(-5).reverse().map(b => {
-        const won = b.team_picked === b.matches?.winner;
-        return `${won ? '✅' : '❌'}  **${b.matches.home_team} vs ${b.matches.away_team}**  ·  ${b.team_picked.toUpperCase()}  (${fmt(b.amount_wagered)}🪙)`;
-      }).join('\n')
-    });
-  }
-
-  return embed({
-    color: COLORS.blue,
-    title: `${user.display_name || user.username}`,
-    description: `> <@${user.discord_id}>\n\u200b`,
-    thumbnail: user.avatar_url,
-    fields,
-    footer: 'Use the events panel dropdown to place a bet'
-  });
-}
-
-module.exports = {
-  COLORS, fmt, progressBar, getAustralianDayLabel,
-  embed, actionRow, selectMenu, button, modal,
-  buildMasterPanel, buildMatchDetail, buildBetConfirmEmbed, buildProfileEmbed
-};
+        if (b.matches?.winner === 'draw' && b.team_picked !== 'draw') {
+          return `↩️  **${b.matches.home_team} vs ${b.matches.away_team}**  ·  Refunded (${fmt(b.amount_wagered)}🪙)`;
+        }
+        const displayPick = b.team_picked === 'home' 
+          ? (b.matches?.home_team

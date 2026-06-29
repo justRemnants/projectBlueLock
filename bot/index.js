@@ -291,6 +291,8 @@ client.on('interactionCreate', async interaction => {
         const pastBets = history.filter(b => b.matches?.status !== 'NS' && b.matches?.winner);
 
         const wins = pastBets.filter(b => b.team_picked === b.matches.winner).length;
+        const refunds = pastBets.filter(b => b.matches.winner === 'draw' && b.team_picked !== 'draw').length;
+        const losses = pastBets.length - wins - refunds;
         const accuracy = pastBets.length > 0 ? Math.round((wins / pastBets.length) * 100) : 0;
 
         const embed = new EmbedBuilder()
@@ -308,23 +310,36 @@ client.on('interactionCreate', async interaction => {
             },
             {
               name: '🏆  Win Rate',
-              value: `\`\`\`\n${wins}W / ${pastBets.length - wins}L  (${accuracy}%)\n\`\`\``,
+              value: `\`\`\`\n${wins}W / ${losses}L / ${refunds}R (${accuracy}%)\n\`\`\``,
               inline: true
             }
           );
 
         if (activeBets.length > 0) {
-          const list = activeBets.map(b =>
-            `⚽ **${b.matches.home_team} vs ${b.matches.away_team}**\n` +
-            `   Picked: **${b.team_picked.toUpperCase()}**  •  Wager: **${fmt(b.amount_wagered)}🪙**`
-          ).join('\n\n');
+          const list = activeBets.map(b => {
+            const displayPick = b.team_picked === 'home' 
+              ? (b.matches?.home_team || 'HOME') 
+              : b.team_picked === 'away' 
+                ? (b.matches?.away_team || 'AWAY') 
+                : 'DRAW';
+            return `⚽ **${b.matches.home_team} vs ${b.matches.away_team}**\n` +
+                   `   Picked: **${displayPick.toUpperCase()}**  •  Wager: **${fmt(b.amount_wagered)}🪙**`;
+          }).join('\n\n');
           embed.addFields({ name: '\u200b\n🕒  Active Wagers', value: list });
         }
 
         if (pastBets.length > 0) {
           const lines = pastBets.slice(-5).reverse().map(b => {
+            if (b.matches.winner === 'draw' && b.team_picked !== 'draw') {
+              return `↩️  **${b.matches.home_team} vs ${b.matches.away_team}**  •  Refunded (${fmt(b.amount_wagered)}🪙)`;
+            }
+            const displayPick = b.team_picked === 'home' 
+              ? (b.matches?.home_team || 'HOME') 
+              : b.team_picked === 'away' 
+                ? (b.matches?.away_team || 'AWAY') 
+                : 'DRAW';
             const won = b.team_picked === b.matches.winner;
-            return `${won ? '✅' : '❌'}  **${b.matches.home_team} vs ${b.matches.away_team}**  •  ${b.team_picked.toUpperCase()}  (${fmt(b.amount_wagered)}🪙)`;
+            return `${won ? '✅' : '❌'}  **${b.matches.home_team} vs ${b.matches.away_team}**  •  ${displayPick.toUpperCase()}  (${fmt(b.amount_wagered)}🪙)`;
           }).join('\n');
           embed.addFields({ name: '\u200b\n📜  Recent Results', value: lines });
         }
@@ -392,17 +407,17 @@ client.on('interactionCreate', async interaction => {
           .setPlaceholder('🔮  Choose your prediction...')
           .addOptions(
             new StringSelectMenuOptionBuilder()
-              .setLabel(`Home Win — ${match.home_team}`)
+              .setLabel(`${match.home_team} Win`)
               .setValue('home')
-              .setEmoji('🏠'),
+              .setEmoji('⚽'),
             new StringSelectMenuOptionBuilder()
               .setLabel('Draw')
               .setValue('draw')
               .setEmoji('🤝'),
             new StringSelectMenuOptionBuilder()
-              .setLabel(`Away Win — ${match.away_team}`)
+              .setLabel(`${match.away_team} Win`)
               .setValue('away')
-              .setEmoji('✈️')
+              .setEmoji('⚽')
           );
 
         const row = new ActionRowBuilder().addComponents(predictionMenu);
@@ -455,24 +470,34 @@ client.on('interactionCreate', async interaction => {
         const isFreeVote = amountWagered === 0;
         const isUpdate = !!result.previousBet;
 
-        const pickEmoji = { home: '🏠', draw: '🤝', away: '✈️' }[teamPicked] || '🔮';
+        const pickEmoji = { home: '⚽', draw: '🤝', away: '⚽' }[teamPicked] || '🔮';
+        const displayPick = teamPicked === 'home' 
+          ? match.home_team.toUpperCase() 
+          : teamPicked === 'away' 
+            ? match.away_team.toUpperCase() 
+            : 'DRAW';
+
         const multiplierStr = isFreeVote
           ? 'Free Vote'
           : estEarnings.multiplier > 1.0
             ? `🔥 ${estEarnings.multiplier}x UNDERDOG BOOST`
             : `${estEarnings.multiplier}x`;
 
+        const isHomeOrAway = teamPicked === 'home' || teamPicked === 'away';
+        const refundNote = (!isFreeVote && isHomeOrAway) ? '\n*Note: If this match ends in a Draw, your wager will be fully refunded.*' : '';
+
         const embed = new EmbedBuilder()
           .setColor(isFreeVote ? 0x9b59b6 : 0x00cc66)
           .setTitle(isUpdate ? '🔄  Prediction Updated' : '✅  Prediction Locked In')
           .setDescription(
             `**${match.home_team}  🆚  ${match.away_team}**\n` +
-            `<t:${Math.floor(new Date(match.kickoff_time).getTime() / 1000)}:R>\n\u200b`
+            `<t:${Math.floor(new Date(match.kickoff_time).getTime() / 1000)}:R>\n\u200b` +
+            refundNote
           )
           .addFields(
             {
               name: `${pickEmoji}  Your Pick`,
-              value: `\`\`\`\n${teamPicked.toUpperCase()}\n\`\`\``,
+              value: `\`\`\`\n${displayPick}\n\`\`\``,
               inline: true
             },
             {
@@ -522,6 +547,8 @@ client.on('interactionCreate', async interaction => {
         const activeBets = history.filter(b => b.matches?.status === 'NS');
         const pastBets = history.filter(b => b.matches?.winner);
         const wins = pastBets.filter(b => b.team_picked === b.matches.winner).length;
+        const refunds = pastBets.filter(b => b.matches.winner === 'draw' && b.team_picked !== 'draw').length;
+        const losses = pastBets.length - wins - refunds;
 
         const embed = new EmbedBuilder()
           .setColor(0x1a6bff)
@@ -534,30 +561,41 @@ client.on('interactionCreate', async interaction => {
           },
           {
             name: '🏆  Record',
-            value: `\`${wins}W / ${pastBets.length - wins}L\``,
+            value: `\`${wins}W / ${losses}L / ${refunds}R\``,
             inline: true
           });
 
         if (activeBets.length > 0) {
           embed.addFields({
             name: '\u200b\n🕒  Active Wagers',
-            value: activeBets.map(b =>
-              `⚽ **${b.matches.home_team} vs ${b.matches.away_team}**\n` +
-              `   → **${b.team_picked.toUpperCase()}**  •  ${fmt(b.amount_wagered)}🪙`
-            ).join('\n\n')
+            value: activeBets.map(b => {
+              const displayPick = b.team_picked === 'home' 
+                ? (b.matches?.home_team || 'HOME') 
+                : b.team_picked === 'away' 
+                  ? (b.matches?.away_team || 'AWAY') 
+                  : 'DRAW';
+              return `⚽ **${b.matches.home_team} vs ${b.matches.away_team}**\n` +
+                     `   → **${displayPick.toUpperCase()}**  •  ${fmt(b.amount_wagered)}🪙`;
+            }).join('\n\n')
           });
         } else {
           embed.addFields({ name: '\u200b\n🕒  Active Wagers', value: '*None yet — pick a match from the panel above!*' });
         }
 
         if (pastBets.length > 0) {
-          embed.addFields({
-            name: '\u200b\n📜  Recent Results (Last 5)',
-            value: pastBets.slice(-5).reverse().map(b => {
-              const won = b.team_picked === b.matches.winner;
-              return `${won ? '✅' : '❌'}  **${b.matches.home_team} vs ${b.matches.away_team}**  •  ${b.team_picked.toUpperCase()}  (${fmt(b.amount_wagered)}🪙)`;
-            }).join('\n')
-          });
+          const lines = pastBets.slice(-5).reverse().map(b => {
+            if (b.matches.winner === 'draw' && b.team_picked !== 'draw') {
+              return `↩️  **${b.matches.home_team} vs ${b.matches.away_team}**  •  Refunded (${fmt(b.amount_wagered)}🪙)`;
+            }
+            const displayPick = b.team_picked === 'home' 
+              ? (b.matches?.home_team || 'HOME') 
+              : b.team_picked === 'away' 
+                ? (b.matches?.away_team || 'AWAY') 
+                : 'DRAW';
+            const won = b.team_picked === b.matches.winner;
+            return `${won ? '✅' : '❌'}  **${b.matches.home_team} vs ${b.matches.away_team}**  •  ${displayPick.toUpperCase()}  (${fmt(b.amount_wagered)}🪙)`;
+          }).join('\n');
+          embed.addFields({ name: '\u200b\n📜  Recent Results (Last 5)', value: lines });
         }
 
         embed.setFooter({ text: 'Use /profile for full stats' }).setTimestamp();
@@ -587,7 +625,7 @@ client.on('interactionCreate', async interaction => {
             value:
               '```\n> 80% vote share  →  1.0x  (favourite wins, no bonus)\n' +
               '50–80%           →  1.0x  (standard split)\n' +
-              '20–50%           →  1.10x ⬆  (mild upset)\n' +
+              '20–50%           →  1.10x ⬆  (mild underdog)\n' +
               '< 20%            →  1.20x  🔥 (miracle jackpot)\n```'
           },
           {
