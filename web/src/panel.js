@@ -2,9 +2,11 @@
  * web/src/panel.js
  * 
  * Lightweight layout builder returning raw JSON components for serverless execution.
+ * Configured with FIFA Timezone (EST/EDT - America/New_York), strike-through text for 
+ * occurred matches, team vs separators set to ⚔️, and dynamic 30% wealth bet limitations.
  */
 
-const { getActiveMatches, getSpyMetric } = require('./database');
+const { getActiveMatches, getSpyMetric, getUserHistory } = require('./database');
 
 const COLORS = {
   blue: 0x1a6bff,
@@ -24,9 +26,9 @@ function progressBar(percent, length = 10) {
   return '█'.repeat(filled) + '░'.repeat(empty);
 }
 
-function getAustralianDayLabel(kickoffStr) {
+function getFIFADayLabel(kickoffStr) {
   const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Australia/Sydney',
+    timeZone: 'America/New_York',
     year: 'numeric', month: '2-digit', day: '2-digit'
   });
   const nowLabel = formatter.format(new Date());
@@ -64,23 +66,23 @@ function modal({ customId, title, inputs }) {
 async function buildMasterPanel() {
   const matches = await getActiveMatches();
 
+  // Find matches scheduled for Today or Tomorrow in the FIFA timezone (America/New_York)
   const upcomingMatches = matches.filter(m => {
-    if (m.status !== 'NS') return false;
-    const label = getAustralianDayLabel(m.kickoff_time);
+    const label = getFIFADayLabel(m.kickoff_time);
     return label === 'Today' || label === 'Tomorrow';
   });
 
   const now = new Date();
-  const aestTime = now.toLocaleTimeString('en-AU', {
-    timeZone: 'Australia/Sydney',
-    hour: '2-digit', minute: '2-digit'
+  const fifaTime = now.toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit', minute: '2-digit', timeZoneName: 'short'
   });
 
   const embed = {
     color: COLORS.blue,
     title: '🏆  Project Blue-Lock  •  World Cup 2026',
-    description: '> Use fake tokens to predict real match outcomes.\n> The bigger the upset, the bigger the jackpot.\n\n\u200b',
-    footer: { text: `🕒 Last updated · ${aestTime} AEST  •  Use /profile to view your wallet` },
+    description: 'Bet on matches to become the richest in the server\nBut don\'t get too greedy...\n\n\u200b',
+    footer: { text: `🕒 Last updated · ${fifaTime} (FIFA Time)  •  Use /profile to view your wallet` },
     timestamp: new Date().toISOString(),
     fields: []
   };
@@ -88,12 +90,12 @@ async function buildMasterPanel() {
   if (upcomingMatches.length === 0) {
     embed.fields.push({
       name: '⚽  Upcoming Matches',
-      value: '```\nNo matches scheduled for Today or Tomorrow (AEST/AEDT).\nRun /sync-matches to refresh the fixture list.\n```'
+      value: '```\nNo matches scheduled for Today or Tomorrow in USA East Time.\nRun /sync-matches to refresh the list.\n```'
     });
   } else {
     const groups = { Today: [], Tomorrow: [] };
     upcomingMatches.forEach(m => {
-      const label = getAustralianDayLabel(m.kickoff_time);
+      const label = getFIFADayLabel(m.kickoff_time);
       if (groups[label]) groups[label].push(m);
     });
 
@@ -111,45 +113,66 @@ async function buildMasterPanel() {
 
         const unixTs = Math.floor(new Date(m.kickoff_time).getTime() / 1000);
 
+        // Check if the kickoff time has passed or match is finished
+        const kickedOff = new Date() >= new Date(m.kickoff_time);
+        const isFinished = m.status === 'FT';
+        const isLive = m.status === 'LIVE';
+
+        let statusSuffix = '';
+        if (isFinished) statusSuffix = ' (Finished 🏁)';
+        else if (isLive) statusSuffix = ' (LIVE 🔴)';
+        else if (kickedOff) statusSuffix = ' (Kicked Off 🕒)';
+
+        const matchHeader = `**${m.home_team}  ⚔️  ${m.away_team}**${statusSuffix}`;
+        const matchDisplay = (kickedOff || isFinished) ? `~~${matchHeader}~~` : matchHeader;
+
         const spyBlock = spy.totalVotes > 0
           ? [
               `\`H ${progressBar(homeShare, 8)} ${String(homeShare).padStart(3)}%  ${fmt(spy.home.tokens)}🪙\``,
               `\`D ${progressBar(drawShare, 8)} ${String(drawShare).padStart(3)}%  ${fmt(spy.draw.tokens)}🪙\``,
               `\`A ${progressBar(awayShare, 8)} ${String(awayShare).padStart(3)}%  ${fmt(spy.away.tokens)}🪙\``
             ].join('\n')
-          : '`No wagers placed yet — be the first!`';
+          : '`No wagers placed yet`';
 
         lines.push(
-          `**${m.home_team}  🆚  ${m.away_team}**\n` +
-          `<t:${unixTs}:F>\n` +
+          `${matchDisplay}\n` +
+          `Kickoff: <t:${unixTs}:F> (<t:${unixTs}:R>)\n` +
           `${spyBlock}\n` +
           `\u200b`
         );
       }
 
       embed.fields.push({
-        name: `📅  ${day}'s Matches`,
+        name: `📅  Matches Happening ${day}`,
         value: lines.join('\n')
       });
     }
   }
 
+  // Filter out matches that have already kicked off/occurred so users can't select them
+  const openMatches = upcomingMatches.filter(m => {
+    const kickedOff = new Date() >= new Date(m.kickoff_time);
+    return !kickedOff && m.status === 'NS';
+  });
+
   const options = [];
-  if (upcomingMatches.length > 0) {
-    upcomingMatches.slice(0, 25).forEach(m => {
+  if (openMatches.length > 0) {
+    openMatches.slice(0, 25).forEach(m => {
+      const displayTime = new Date(m.kickoff_time).toLocaleTimeString('en-US', {
+        timeZone: 'America/New_York',
+        hour: '2-digit', minute: '2-digit', hour12: true
+      }) + ' EST';
+
       options.push({
         label: `${m.home_team} vs ${m.away_team}`,
         value: m.fixture_id,
-        description: new Date(m.kickoff_time).toLocaleTimeString('en-AU', {
-          timeZone: 'Australia/Sydney',
-          hour: '2-digit', minute: '2-digit', hour12: true
-        }) + ' AEST',
+        description: `Starts at ${displayTime}`,
         emoji: { name: '⚽' }
       });
     });
   } else {
     options.push({
-      label: 'No matches available',
+      label: 'No open matches available to bet on',
       value: 'none'
     });
   }
@@ -159,9 +182,9 @@ async function buildMasterPanel() {
     components: [{
       type: 3, // STRING_SELECT
       custom_id: 'select_match',
-      placeholder: '⚽  Select a match to place or edit your prediction...',
+      placeholder: '🔮 Pick an upcoming match to bet on...',
       options: options,
-      disabled: upcomingMatches.length === 0
+      disabled: openMatches.length === 0
     }]
   };
 
@@ -198,39 +221,51 @@ async function buildMatchDetail(match, dbUser) {
 
   const unixTs = Math.floor(new Date(match.kickoff_time).getTime() / 1000);
 
+  // Dynamic maximum bet calculations (30% of Total Wealth or 300, whichever is lower)
+  const history = await getUserHistory(dbUser.discord_id);
+  const activeBets = history.filter(b => b.matches?.status === 'NS');
+  const totalActiveWagered = activeBets.reduce((sum, b) => sum + b.amount_wagered, 0);
+  const totalWealth = dbUser.tokens_balance + totalActiveWagered;
+  const maxBet = Math.min(Math.floor(totalWealth * 0.30), 300);
+
   const embed = {
     color: COLORS.blue,
-    title: `⚽  ${match.home_team}  🆚  ${match.away_team}`,
+    title: `⚽  ${match.home_team}  ⚔️  ${match.away_team}`,
     description: `**Kickoff:** <t:${unixTs}:F> (<t:${unixTs}:R>)\n\u200b`,
     fields: [
       {
-        name: '💰  Your Wallet',
+        name: '💰 Wallet',
         value: `\`${fmt(dbUser.tokens_balance)} tokens\``,
         inline: true
       },
       {
-        name: '🧮  Pool Size',
-        value: `\`${fmt(spy.totalTokens)} tokens wagered\``,
+        name: '🛡️ Max Bet Allowed',
+        value: `\`${fmt(maxBet)} tokens\`\n*(30% of total wealth)*`,
         inline: true
       },
       {
-        name: '\u200b\n📊  Live Spy Metric',
+        name: '🧮 Wagered Pool',
+        value: `\`${fmt(spy.totalTokens)} tokens total\``,
+        inline: true
+      },
+      {
+        name: '\u200b\n📊 Live Bet Split (Spy Metric)',
         value:
           `\`H ${progressBar(homeShare, 10)} ${String(homeShare).padStart(3)}%  (${fmt(spy.home.tokens)}🪙)\`\n` +
           `\`D ${progressBar(drawShare, 10)} ${String(drawShare).padStart(3)}%  (${fmt(spy.draw.tokens)}🪙)\`\n` +
           `\`A ${progressBar(awayShare, 10)} ${String(awayShare).padStart(3)}%  (${fmt(spy.away.tokens)}🪙)\``
       }
     ],
-    footer: { text: 'Select your prediction below. You can change it before kickoff.' },
+    footer: { text: 'Choose your prediction. You can change your selection anytime before kickoff.' },
     timestamp: new Date().toISOString()
   };
 
   const row = {
     type: 1, // ACTION_ROW
     components: [{
-      type: 3, // STRING_SELECT
+      type: 3,
       custom_id: `select_prediction:${match.fixture_id}`,
-      placeholder: '🔮  Choose your prediction...',
+      placeholder: '🔮 Choose your predicted winner...',
       options: [
         {
           label: `${match.home_team} Win`,
@@ -267,47 +302,47 @@ function buildBetConfirmEmbed({ match, teamPicked, amountWagered, estEarnings, n
   const multiplierStr = isFreeVote
     ? 'Free Vote'
     : estEarnings.multiplier > 1.0
-      ? `🔥 ${estEarnings.multiplier}x UNDERDOG BOOST`
+      ? `🔥 ${estEarnings.multiplier}x Underdog Boost`
       : `${estEarnings.multiplier}x`;
 
   const isHomeOrAway = teamPicked === 'home' || teamPicked === 'away';
-  const refundNote = (!isFreeVote && isHomeOrAway) ? '\n*Note: If this match ends in a Draw, your wager will be fully refunded.*' : '';
+  const refundNote = (!isFreeVote && isHomeOrAway) ? '\n*Note: If the match ends in a Draw, your wager will be fully refunded.*' : '';
 
   return {
     color: isFreeVote ? COLORS.purple : COLORS.green,
-    title: isUpdate ? '🔄  Prediction Updated' : '✅  Prediction Locked In',
+    title: isUpdate ? '🔄 Prediction Updated' : '✅ Prediction Locked In',
     description:
-      `**${match.home_team}  🆚  ${match.away_team}**\n` +
-      `<t:${Math.floor(new Date(match.kickoff_time).getTime() / 1000)}:R>\n\u200b` +
+      `**${match.home_team}  ⚔️  ${match.away_team}**\n` +
+      `Starts <t:${Math.floor(new Date(match.kickoff_time).getTime() / 1000)}:R>\n\u200b` +
       refundNote,
     fields: [
       {
-        name: `${pickEmoji}  Your Pick`,
-        value: `\`\`\`\n${displayPick}\n\`\`\n`,
+        name: `${pickEmoji} Your Pick`,
+        value: `\`\`\`\n${displayPick}\n\`\`\``,
         inline: true
       },
       {
-        name: '🪙  Wagered',
-        value: `\`\`\`\n${isFreeVote ? 'Free Vote' : fmt(amountWagered) + ' tokens'}\n\`\`\n`,
+        name: '🪙 Wager',
+        value: `\`\`\`\n${isFreeVote ? 'Free Vote' : fmt(amountWagered) + ' tokens'}\n\`\`\``,
         inline: true
       },
       {
-        name: '📈  Est. Return',
+        name: '📈 Est. Payout',
         value: `\`\`\`\n${isFreeVote ? '+5 tokens (if correct)' : fmt(estEarnings.estimated) + ' tokens'}\n\`\`\n`,
         inline: true
       },
       {
-        name: '⚡  Multiplier',
+        name: '⚡ Multiplier',
         value: multiplierStr,
         inline: true
       },
       {
-        name: '💰  New Balance',
+        name: '💰 New Balance',
         value: `\`${fmt(newBalance)} tokens\``,
         inline: true
       }
     ],
-    footer: { text: 'You can change your prediction any time before kickoff.' },
+    footer: { text: 'You can update your pick anytime before kickoff.' },
     timestamp: new Date().toISOString()
   };
 }
@@ -325,12 +360,12 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
     thumbnail: user.avatar_url ? { url: user.avatar_url } : null,
     fields: [
       {
-        name: '💰  Wallet',
-        value: `\`\`\`\n${fmt(user.tokens_balance)} tokens\n\`\`\n`,
+        name: '💰 Wallet Balance',
+        value: `\`\`\`\n${fmt(user.tokens_balance)} tokens\n\`\`\``,
         inline: true
       },
       {
-        name: '🏆  Win Rate',
+        name: '🏆 Record',
         value: `\`\`\`\n${wins}W / ${losses}L / ${refunds}R (${accuracy}%)\n\`\`\n`,
         inline: true
       }
@@ -346,16 +381,16 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
         : b.team_picked === 'away'
           ? (b.matches?.away_team || 'AWAY')
           : 'DRAW';
-      return `⚽ **${b.matches?.home_team} vs ${b.matches?.away_team}**\n` +
+      return `⚽ **${b.matches?.home_team} ⚔️ ${b.matches?.away_team}**\n` +
              `   Picked: **${displayPick.toUpperCase()}**  •  Wager: **${fmt(b.amount_wagered)}🪙**`;
     }).join('\n\n');
-    embed.fields.push({ name: '\u200b\n🕒  Active Wagers', value: list });
+    embed.fields.push({ name: '\u200b\n🕒 Active Wagers', value: list });
   }
 
   if (pastBets.length > 0) {
     const lines = pastBets.slice(-5).reverse().map(b => {
       if (b.matches?.winner === 'draw' && b.team_picked !== 'draw') {
-        return `↩️  **${b.matches?.home_team} vs ${b.matches?.away_team}**  •  Refunded (${fmt(b.amount_wagered)}🪙)`;
+        return `↩️  **${b.matches?.home_team} ⚔️ ${b.matches?.away_team}**  •  Refunded (${fmt(b.amount_wagered)}🪙)`;
       }
       const displayPick = b.team_picked === 'home'
         ? (b.matches?.home_team || 'HOME')
@@ -363,9 +398,9 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
           ? (b.matches?.away_team || 'AWAY')
           : 'DRAW';
       const won = b.team_picked === b.matches?.winner;
-      return `${won ? '✅' : '❌'}  **${b.matches?.home_team} vs ${b.matches?.away_team}**  •  ${displayPick.toUpperCase()}  (${fmt(b.amount_wagered)}🪙)`;
+      return `${won ? '✅' : '❌'}  **${b.matches?.home_team} ⚔️ ${b.matches?.away_team}**  •  ${displayPick.toUpperCase()}  (${fmt(b.amount_wagered)}🪙)`;
     }).join('\n');
-    embed.fields.push({ name: '\u200b\n📜  Recent Results', value: lines });
+    embed.fields.push({ name: '\u200b\n📜 Recent Results', value: lines });
   }
 
   return embed;

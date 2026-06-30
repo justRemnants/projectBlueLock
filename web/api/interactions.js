@@ -2,7 +2,8 @@
  * web/api/interactions.js
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
- * Refactored to eliminate deferred responses, preventing serverless execution freezes.
+ * Refactored to eliminate deferred responses, preventing serverless freezes.
+ * Fully integrates 30% wealth bet validation ceilings on wager modal submissions.
  */
 
 require('dotenv').config();
@@ -188,6 +189,12 @@ async function handleComponent(interaction, res) {
       const match = matches.find(m => m.fixture_id === fixtureId);
       if (!match) return sendJson(res, errorEmbed('Match not found.'));
 
+      // Check if the match is already kicked off before letting them render the detail view
+      const kickedOff = new Date() >= new Date(match.kickoff_time);
+      if (kickedOff || match.status !== 'NS') {
+        return sendJson(res, errorEmbed('This match has already kicked off! Predictions are locked.'));
+      }
+
       const detail = await buildMatchDetail(match, dbUser);
       
       return sendJson(res, {
@@ -215,7 +222,7 @@ async function handleComponent(interaction, res) {
         inputs: [{
           customId: 'wager_amount',
           label: 'Token amount (enter 0 for a Free Vote)',
-          placeholder: 'e.g. 250',
+          placeholder: 'e.g. 150',
           minLength: 1,
           maxLength: 6
         }]
@@ -265,8 +272,8 @@ async function handleComponent(interaction, res) {
               value: 'Wager **0 tokens** to cast a Free Vote.\nFree votes do not affect the main pool.\nA correct free vote earns a flat **+5 tokens**.'
             },
             {
-              name: '4️⃣  Base Rewards & Editing',
-              value: 'Winning bets receive a **Base Reward** (+5 tokens for bets < 20, +20 tokens for bets ≥ 20).\nYou can update your bet any time before kickoff.'
+              name: '4️⃣  Base Rewards & Limits',
+              value: 'Winning bets receive a **Base Reward** (+5 tokens for bets < 20, +20 tokens for bets ≥ 20).\n\n⚠️ **Bet Limit:** Your maximum allowed wager on any single match is **30% of your total wealth** (balance + active bets) or **300 tokens**, whichever is **lower**.'
             }
           ],
           footer: { text: 'Good luck! 🍀' }
@@ -290,6 +297,27 @@ async function handleModal(interaction, res) {
     }
 
     try {
+      const dbUser = await getOrCreateUser(user);
+      const history = await getUserHistory(user.id);
+      
+      // Filter active bets excluding the match being edited (if updating a bet)
+      const otherActiveBets = history.filter(b => b.matches?.status === 'NS' && b.fixture_id !== fixtureId);
+      const totalActiveWagered = otherActiveBets.reduce((sum, b) => sum + b.amount_wagered, 0);
+      
+      // Fetching original wager if updating
+      const existingWager = history.find(b => b.fixture_id === fixtureId)?.amount_wagered || 0;
+      
+      // Calculate Total Wealth based on the baseline assets (Wallet + Other active bets + previous wager of this match)
+      const totalWealth = dbUser.tokens_balance + totalActiveWagered + existingWager;
+      const maxBet = Math.min(Math.floor(totalWealth * 0.30), 300);
+
+      if (amountWagered > maxBet) {
+        return sendJson(res, errorEmbed(
+          `Wager declined! Your maximum allowable bet is ${maxBet} tokens.\n` +
+          `*(Calculated as the lower of 30% of your Total Wealth [${fmt(totalWealth)}🪙] or 300 tokens)*`
+        ));
+      }
+
       const result = await placeBet(user.id, fixtureId, teamPicked, amountWagered);
       const estEarnings = await calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, user.id);
       const matches = await getActiveMatches();
