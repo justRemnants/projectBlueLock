@@ -121,7 +121,7 @@ async function buildMasterPanel() {
   const embed = {
     color: COLORS.blue,
     title: '🏆  Project Blue-Lock  •  World Cup 2026',
-    description: 'Bet on matches to become the richest in the server\nBut don\'t get too greedy...\n\n\u200b',
+    description: "> Bet on matches to become the richest in the server\n> But don't get too greedy...\n\n\u200b",
     footer: { text: `🕒 Last updated · ${fifaTime}  •  Use /profile to view your wallet` },
     timestamp: new Date().toISOString(),
     fields: []
@@ -130,7 +130,7 @@ async function buildMasterPanel() {
   if (upcomingMatches.length === 0) {
     embed.fields.push({
       name: '⚽  Upcoming Matches',
-      value: '```\nNo matches scheduled for Today or Tomorrow in USA East Time.\nRun /sync-matches to refresh the list.\n```'
+      value: "```\nNo matches scheduled for Today or Tomorrow in USA East Time.\nRun /sync-matches to refresh the list.\n```"
     });
   } else {
     const groups = { Today: [], Tomorrow: [] };
@@ -368,17 +368,17 @@ function buildBetConfirmEmbed({ match, teamPicked, amountWagered, estEarnings, n
     fields: [
       {
         name: `${pickEmoji} Your Pick`,
-        value: `\`\`\`\n${displayPick}\n\`\`\prime,
+        value: "```\n" + displayPick + "\n```",
         inline: true
       },
       {
         name: '🪙 Wager',
-        value: `\`\`\`\n${isFreeVote ? 'Free Vote' : fmt(amountWagered) + ' tokens'}\n\`\`\prime,
+        value: "```\n" + (isFreeVote ? 'Free Vote' : fmt(amountWagered) + ' tokens') + "\n```",
         inline: true
       },
       {
         name: '📈 Est. Payout',
-        value: `\`\`\`\n${isFreeVote ? '+5 tokens (if correct)' : fmt(estEarnings.estimated) + ' tokens'}\n\`\`\prime,
+        value: "```\n" + (isFreeVote ? '+5 tokens (if correct)' : fmt(estEarnings.estimated) + ' tokens') + "\n```",
         inline: true
       },
       {
@@ -411,12 +411,12 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
     fields: [
       {
         name: '💰 Wallet Balance',
-        value: `\`\`\`\n${fmt(user.tokens_balance)} tokens\n\`\`\prime,
+        value: `\`\`\`\n${fmt(user.tokens_balance)} tokens\n\`\`\n`,
         inline: true
       },
       {
         name: '🏆 Record',
-        value: `\`\`\`\n${wins}W / ${losses}L / ${refunds}R (${accuracy}%)\n\`\`\prime,
+        value: `\`\`\`\n${wins}W / ${losses}L / ${refunds}R (${accuracy}%)\n\`\`\n`,
         inline: true
       }
     ],
