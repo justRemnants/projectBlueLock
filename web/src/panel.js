@@ -5,6 +5,7 @@
  * Configured with FIFA Timezone (EST/EDT - America/New_York), strike-through text for 
  * occurred matches, team vs separators set to ⚔️, and dynamic 30% wealth bet limitations.
  * Features readable team names and country flags in the Live Spy Metrics and Match lists.
+ * Compact progress bars (length 6) and team name shortening prevent mobile truncation.
  */
 
 const { getActiveMatches, getSpyMetric, getUserHistory } = require('./database');
@@ -17,7 +18,7 @@ const COLORS = {
   purple: 0x9b59b6
 };
 
-// Map country names to flag emojis for clean layout presentation
+// Comprehensive map of World Cup nations to flag emojis
 const COUNTRY_FLAGS = {
   "Argentina": "🇦🇷", "Australia": "🇦🇺", "Belgium": "🇧🇪", "Brazil": "🇧🇷",
   "Canada": "🇨🇦", "Cameroon": "🇨🇲", "Costa Rica": "🇨🇷", "Croatia": "🇭🇷",
@@ -26,21 +27,55 @@ const COUNTRY_FLAGS = {
   "Mexico": "🇲🇽", "Morocco": "🇲🇦", "Netherlands": "🇳🇱", "Poland": "🇵🇱",
   "Portugal": "🇵🇹", "Qatar": "🇶🇦", "Saudi Arabia": "🇸🇦", "Senegal": "🇸🇳",
   "Serbia": "🇷🇸", "South Korea": "🇰🇷", "Spain": "🇪🇸", "Switzerland": "🇨🇭",
-  "Tunisia": "🇹🇳", "USA": "🇺🇸", "United States": "🇺🇸", "Uruguay": "🇺🇾", "Wales": "🏴󠁧󠁢󠁷󠁬󠁳󠁿"
+  "Tunisia": "🇹🇳", "USA": "🇺🇸", "United States": "🇺🇸", "Uruguay": "🇺🇾", "Wales": "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
+  "Italy": "🇮🇹", "Sweden": "🇸🇪", "Colombia": "🇨🇴", "Peru": "🇵🇪", "Chile": "🇨🇱", 
+  "Nigeria": "🇳🇬", "Algeria": "🇩🇿", "Egypt": "🇪🇬", "New Zealand": "🇳🇿",
+  "Norway": "🇳🇴", "Congo DR": "🇨🇩", "DR Congo": "🇨🇩", "Ivory Coast": "🇨🇮", 
+  "Cote d'Ivoire": "🇨🇮", "Bosnia-Herzegovina": "🇧🇦", "Bosnia and Herzegovina": "🇧🇦",
+  "Republic of the Congo": "🇨🇬", "Congo": "🇨🇬"
 };
 
 function getFlag(teamName) {
   return COUNTRY_FLAGS[teamName] || "⚽";
 }
 
+/**
+ * Shortens long country names so the layout remains aligned on narrow mobile screens
+ */
+function shortenTeamName(name) {
+  if (!name) return "";
+  if (name === "Bosnia-Herzegovina" || name === "Bosnia and Herzegovina") return "Bosnia-Herz.";
+  if (name === "United States") return "USA";
+  if (name === "Saudi Arabia") return "Saudi Arab.";
+  if (name === "Congo DR" || name === "DR Congo") return "DR Congo";
+  if (name === "Ivory Coast" || name === "Cote d'Ivoire") return "Ivory Coast";
+  if (name === "Republic of the Congo") return "Congo Rep.";
+  
+  return name.length > 11 ? name.substring(0, 10) + "." : name;
+}
+
 function fmt(n) {
   return typeof n === 'number' ? n.toLocaleString() : '0';
 }
 
-function progressBar(percent, length = 10) {
+function progressBar(percent, length = 6) {
   const filled = Math.round((percent / 100) * length);
   const empty = Math.max(0, length - filled);
   return '█'.repeat(filled) + '░'.repeat(empty);
+}
+
+/**
+ * Format aligned spy metrics by padding text inside the code block.
+ * Shortens names and keeps progress bar compact to avoid mobile client clipping.
+ */
+function formatSpyLine(flag, label, percent, tokens, barLength = 6) {
+  const shortName = shortenTeamName(label);
+  const bar = progressBar(percent, barLength);
+  const nameStr = shortName.padEnd(11, ' '); // Align names to 11 character width
+  const percentStr = String(percent).padStart(3) + '%';
+  const tokenStr = fmt(tokens) + '🪙';
+  
+  return `${flag} \`${nameStr} ${bar} ${percentStr}  ${tokenStr}\``;
 }
 
 function getFIFADayLabel(kickoffStr) {
@@ -175,9 +210,9 @@ async function buildMasterPanel() {
 
         const spyBlock = spy.totalVotes > 0
           ? [
-              `${homeFlag} **${m.home_team}** · \`${progressBar(homeShare, 8)} ${String(homeShare).padStart(3)}%  ${fmt(spy.home.tokens)}🪙\``,
-              `🤝 **Draw** · \`${progressBar(drawShare, 8)} ${String(drawShare).padStart(3)}%  ${fmt(spy.draw.tokens)}🪙\``,
-              `${awayFlag} **${m.away_team}** · \`${progressBar(awayShare, 8)} ${String(awayShare).padStart(3)}%  ${fmt(spy.away.tokens)}🪙\``
+              formatSpyLine(homeFlag, m.home_team, homeShare, spy.home.tokens, 6),
+              formatSpyLine("🤝", "Draw", drawShare, spy.draw.tokens, 6),
+              formatSpyLine(awayFlag, m.away_team, awayShare, spy.away.tokens, 6)
             ].join('\n')
           : '`No wagers placed yet`';
 
@@ -300,10 +335,11 @@ async function buildMatchDetail(match, dbUser) {
       },
       {
         name: '\u200b\n📊 Live Bet Split (Spy Metric)',
-        value:
-          `${homeFlag} **${match.home_team}** · \`${progressBar(homeShare, 10)} ${String(homeShare).padStart(3)}%  (${fmt(spy.home.tokens)}🪙)\`\n` +
-          `🤝 **Draw** · \`${progressBar(drawShare, 10)} ${String(drawShare).padStart(3)}%  (${fmt(spy.draw.tokens)}🪙)\`\n` +
-          `${awayFlag} **${match.away_team}** · \`${progressBar(awayShare, 10)} ${String(awayShare).padStart(3)}%  (${fmt(spy.away.tokens)}🪙)\``
+        value: [
+          formatSpyLine(homeFlag, match.home_team, homeShare, spy.home.tokens, 8),
+          formatSpyLine("🤝", "Draw", drawShare, spy.draw.tokens, 8),
+          formatSpyLine(awayFlag, match.away_team, awayShare, spy.away.tokens, 8)
+        ].join('\n')
       }
     ],
     footer: { text: 'Choose your prediction. You can change your selection anytime before kickoff.' },
