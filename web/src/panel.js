@@ -4,8 +4,8 @@
  * Lightweight layout builder returning raw JSON components for serverless execution.
  * Configured with FIFA Timezone (EST/EDT - America/New_York), strike-through text for 
  * occurred matches, team vs separators set to ⚔️, and dynamic 30% wealth bet limitations.
- * Features readable team names and country flags in the Live Spy Metrics and Match lists.
- * Compact progress bars (length 6) and team name shortening prevent mobile truncation.
+ * Features readable team names and country flags in the Live Spy Metrics, Match lists, 
+ * Match details, and choice select menu options.
  */
 
 const { getActiveMatches, getSpyMetric, getUserHistory } = require('./database');
@@ -18,7 +18,7 @@ const COLORS = {
   purple: 0x9b59b6
 };
 
-// Comprehensive map of World Cup nations to flag emojis
+// Map country names to flag emojis for clean layout presentation
 const COUNTRY_FLAGS = {
   "Argentina": "🇦🇷", "Australia": "🇦🇺", "Belgium": "🇧🇪", "Brazil": "🇧🇷",
   "Canada": "🇨🇦", "Cameroon": "🇨🇲", "Costa Rica": "🇨🇷", "Croatia": "🇭🇷",
@@ -315,7 +315,7 @@ async function buildMatchDetail(match, dbUser) {
 
   const embed = {
     color: COLORS.blue,
-    title: `⚽  ${match.home_team}  ⚔️  ${match.away_team}`,
+    title: `${homeFlag}  ${match.home_team}  ⚔️  ${match.away_team}  ${awayFlag}`,
     description: `**Kickoff:** <t:${unixTs}:F> (<t:${unixTs}:R>)\n\u200b`,
     fields: [
       {
@@ -356,7 +356,7 @@ async function buildMatchDetail(match, dbUser) {
         {
           label: `${match.home_team} Win`,
           value: 'home',
-          emoji: { name: '⚽' }
+          emoji: { name: homeFlag }
         },
         {
           label: 'Draw',
@@ -366,7 +366,7 @@ async function buildMatchDetail(match, dbUser) {
         {
           label: `${match.away_team} Win`,
           value: 'away',
-          emoji: { name: '⚽' }
+          emoji: { name: awayFlag }
         }
       ]
     }]
