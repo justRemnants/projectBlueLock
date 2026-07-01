@@ -3,7 +3,7 @@
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
  * Refactored to eliminate deferred responses, preventing serverless freezes.
- * Fully integrates 30% wealth bet validation ceilings and highly descriptive permission error tracking.
+ * Fully integrates 30% wealth bet validation ceilings on wager modal submissions.
  */
 
 require('dotenv').config();
@@ -103,20 +103,28 @@ async function handleCommand(interaction, res) {
       console.error('setup-panel error:', err.response?.data || err.message);
       
       const discordCode = err.response?.data?.code;
+      const discordMsg = err.response?.data?.message || '';
       let errorDetails = '';
 
-      if (discordCode === 50001) {
+      if (discordCode === 50013 || discordMsg.includes('Missing Permissions')) {
+        errorDetails = 
+          "**Discord API Error: Missing Permissions (Code 50013)**\n\n" +
+          "Your bot is blocked from posting the panel in this channel. Please update your **Discord Server settings**:\n\n" +
+          "1. **Channel Permission Overrides (Most Common):**\n" +
+          "   * Go to this channel's settings -> **Permissions**.\n" +
+          "   * Add your bot (or its integration role).\n" +
+          "   * Ensure **Send Messages** and **Embed Links** are set to **Allowed (Green Check)**.\n\n" +
+          "2. **Global Bot Role:**\n" +
+          "   * Go to Server Settings -> **Roles**.\n" +
+          "   * Click on your bot's role and ensure **Send Messages** and **Embed Links** are turned on.";
+      } else if (discordCode === 50001 || discordMsg.includes('Missing Access')) {
         errorDetails = 
           "**Discord API Error: Missing Access (Code 50001)**\n\n" +
-          "Your bot lacks authorization to write directly to this channel. Please verify the following settings:\n\n" +
-          "1. **Channel Permissions:** Go to this channel's settings -> **Permissions** -> Add the Bot (or its integration role) and allow:\n" +
-          "   • **View Channel**\n" +
-          "   • **Send Messages**\n" +
-          "   • **Embed Links**\n" +
-          "   • **Read Message History**\n\n" +
-          "2. **OAuth2 Bot Scopes:** Ensure you invited the bot using both `bot` and `applications.commands` scopes (not just the commands integration).";
+          "Your bot cannot see this channel or lacks basic access. Please check:\n\n" +
+          "1. **Channel Visibility:** Ensure the bot's role has **View Channel** allowed.\n" +
+          "2. **Scopes:** Ensure you authorized the bot with both `bot` and `applications.commands` checked.";
       } else {
-        errorDetails = `Failed to build the panel: \`\`\`\n${err.response?.data?.message || err.message}\n\`\`\``;
+        errorDetails = `Failed to build the panel: \`\`\`\n${discordMsg || err.message}\n\`\`\``;
       }
 
       return sendJson(res, errorEmbed(errorDetails));
