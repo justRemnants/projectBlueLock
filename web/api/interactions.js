@@ -3,7 +3,7 @@
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
  * Refactored to eliminate deferred responses, preventing serverless freezes.
- * Fully integrates 30% wealth bet validation ceilings on wager modal submissions.
+ * Fully integrates 30% wealth bet validation ceilings and highly descriptive permission error tracking.
  */
 
 require('dotenv').config();
@@ -56,7 +56,7 @@ async function refreshPanel() {
     const panelData = await buildMasterPanel();
     await editChannelMessage(config.channelId, config.messageId, panelData);
   } catch (err) {
-    console.warn('Panel refresh skipped:', err.message);
+    console.warn('Panel refresh skipped inside web bet api:', err.message);
   }
 }
 
@@ -65,7 +65,7 @@ function errorEmbed(msg) {
     type: 4, // MESSAGE
     data: {
       flags: 64, // EPHEMERAL
-      embeds: [{ color: COLORS.red, title: '❌  Error', description: `\`\`\`\n${msg}\n\`\`\`` }]
+      embeds: [{ color: COLORS.red, title: '❌  Error', description: msg }]
     }
   };
 }
@@ -101,7 +101,25 @@ async function handleCommand(interaction, res) {
       });
     } catch (err) {
       console.error('setup-panel error:', err.response?.data || err.message);
-      return sendJson(res, errorEmbed('Failed to build the panel. Check server logs.'));
+      
+      const discordCode = err.response?.data?.code;
+      let errorDetails = '';
+
+      if (discordCode === 50001) {
+        errorDetails = 
+          "**Discord API Error: Missing Access (Code 50001)**\n\n" +
+          "Your bot lacks authorization to write directly to this channel. Please verify the following settings:\n\n" +
+          "1. **Channel Permissions:** Go to this channel's settings -> **Permissions** -> Add the Bot (or its integration role) and allow:\n" +
+          "   • **View Channel**\n" +
+          "   • **Send Messages**\n" +
+          "   • **Embed Links**\n" +
+          "   • **Read Message History**\n\n" +
+          "2. **OAuth2 Bot Scopes:** Ensure you invited the bot using both `bot` and `applications.commands` scopes (not just the commands integration).";
+      } else {
+        errorDetails = `Failed to build the panel: \`\`\`\n${err.response?.data?.message || err.message}\n\`\`\``;
+      }
+
+      return sendJson(res, errorEmbed(errorDetails));
     }
   }
 
@@ -128,7 +146,7 @@ async function handleCommand(interaction, res) {
         await refreshPanel();
       }
     } catch (err) {
-      return sendJson(res, errorEmbed(err.message));
+      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
     }
     return;
   }
@@ -149,7 +167,7 @@ async function handleCommand(interaction, res) {
         }
       });
     } catch (err) {
-      return sendJson(res, errorEmbed(err.message));
+      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
     }
   }
 
@@ -168,7 +186,7 @@ async function handleCommand(interaction, res) {
         }
       });
     } catch (err) {
-      return sendJson(res, errorEmbed(err.message));
+      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
     }
   }
 }
@@ -187,7 +205,7 @@ async function handleComponent(interaction, res) {
       const dbUser = await getOrCreateUser(user);
       const matches = await getActiveMatches();
       const match = matches.find(m => m.fixture_id === fixtureId);
-      if (!match) return sendJson(res, errorEmbed('Match not found.'));
+      if (!match) return sendJson(res, errorEmbed('Match not found in the database.'));
 
       // Check if the match is already kicked off before letting them render the detail view
       const kickedOff = new Date() >= new Date(match.kickoff_time);
@@ -206,7 +224,7 @@ async function handleComponent(interaction, res) {
         }
       });
     } catch (err) {
-      return sendJson(res, errorEmbed(err.message));
+      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
     }
   }
 
@@ -245,7 +263,7 @@ async function handleComponent(interaction, res) {
         }
       });
     } catch (err) {
-      return sendJson(res, errorEmbed(err.message));
+      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
     }
   }
 
@@ -341,7 +359,7 @@ async function handleModal(interaction, res) {
       // Update panel configuration in background
       await refreshPanel();
     } catch (err) {
-      return sendJson(res, errorEmbed(err.message));
+      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
     }
   }
 }
