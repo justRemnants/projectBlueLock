@@ -2,11 +2,6 @@
  * web/src/panel.js
  * 
  * Lightweight layout builder returning raw JSON components for serverless execution.
- * Configured with FIFA Timezone (EST/EDT - America/New_York), strike-through text for 
- * occurred matches, team vs separators set to ⚔️, and dynamic 30% wealth bet limitations.
- * Features readable team names and country flags in the Live Spy Metrics and Match lists.
- * Utilizes a monospaced format helper to ensure aligned progress bars and stats.
- * Refactored for Knockout Stages: "Draw" has been removed from all user-facing selections and metrics.
  */
 
 const { getActiveMatches, getSpyMetric, getUserHistory } = require('./database');
@@ -28,12 +23,15 @@ const COUNTRY_FLAGS = {
   "Mexico": "🇲🇽", "Morocco": "🇲🇦", "Netherlands": "🇳🇱", "Poland": "🇵🇱",
   "Portugal": "🇵🇹", "Qatar": "🇶🇦", "Saudi Arabia": "🇸🇦", "Senegal": "🇸🇳",
   "Serbia": "🇷🇸", "South Korea": "🇰🇷", "Spain": "🇪🇸", "Switzerland": "🇨🇭",
-  "Tunisia": "🇹🇳", "USA": "🇺🇸", "United States": "🇺🇸", "Uruguay": "🇺🇾", "Wales": "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
+  "Tunisia": "🇹🇳", "USA": "🇺🇸", "United States": "🇺🇸", "Uruguay": "🇺🇾", "Wales": "🏴󠁧󠁢🇺󠁬󠁳󠁿",
   "Italy": "🇮🇹", "Sweden": "🇸🇪", "Colombia": "🇨🇴", "Peru": "🇵🇪", "Chile": "🇨🇱", 
   "Nigeria": "🇳🇬", "Algeria": "🇩🇿", "Egypt": "🇪🇬", "New Zealand": "🇳🇿",
   "Norway": "🇳🇴", "Congo DR": "🇨🇩", "DR Congo": "🇨🇩", "Ivory Coast": "🇨🇮", 
   "Cote d'Ivoire": "🇨🇮", "Bosnia-Herzegovina": "🇧🇦", "Bosnia and Herzegovina": "🇧🇦",
-  "Republic of the Congo": "🇨🇬", "Congo": "🇨🇬"
+  "Republic of the Congo": "🇨🇬", "Congo": "🇨🇬",
+  "Austria": "🇦🇹", "Ukraine": "🇺🇦", "Turkey": "🇹🇷", "Czechia": "🇨🇿", 
+  "Czech Republic": "🇨🇿", "Slovakia": "🇸🇰", "Slovenia": "🇸🇮", "Georgia": "🇬🇪", 
+  "Albania": "🇦🇱", "Hungary": "🇭🇺", "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿", "Romania": "🇷🇴"
 };
 
 function getFlag(teamName) {
@@ -89,32 +87,42 @@ function getFIFADayLabel(kickoffStr) {
   return null;
 }
 
+/**
+ * Calculates the Day of the World Cup (World Cup 2026 starts on June 11, 2026)
+ */
 function getWorldCupDay(kickoffStr) {
   const msInDay = 86400000;
+  
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/New_York',
     year: 'numeric', month: '2-digit', day: '2-digit'
   });
-  const startStr = "2026-06-11";
+
+  const startStr = "2026-06-11"; // Opening day of World Cup 2026
   const kickoffStrNY = formatter.format(new Date(kickoffStr));
+
   const startParsed = new Date(startStr);
   const kickoffParsed = new Date(kickoffStrNY);
-  return Math.ceil(Math.abs(kickoffParsed - startParsed) / msInDay) + 1;
+
+  const diffTime = Math.abs(kickoffParsed - startParsed);
+  const diffDays = Math.ceil(diffTime / msInDay) + 1; // June 11 is Day 1
+
+  return diffDays;
 }
 
 function modal({ customId, title, inputs }) {
   return {
-    type: 9,
+    type: 9, // MODAL response type
     data: {
       custom_id: customId,
       title: title,
       components: inputs.map(input => ({
-        type: 1,
+        type: 1, // ACTION_ROW
         components: [{
-          type: 4,
+          type: 4, // TEXT_INPUT
           custom_id: input.customId,
           label: input.label,
-          style: 1,
+          style: 1, // SHORT
           placeholder: input.placeholder,
           min_length: input.minLength,
           max_length: input.maxLength,
@@ -127,6 +135,8 @@ function modal({ customId, title, inputs }) {
 
 async function buildMasterPanel() {
   const matches = await getActiveMatches();
+
+  // Find matches scheduled for Today or Tomorrow in the FIFA timezone (America/New_York)
   const upcomingMatches = matches.filter(m => {
     const label = getFIFADayLabel(m.kickoff_time);
     return label === 'Today' || label === 'Tomorrow';
@@ -170,12 +180,12 @@ async function buildMasterPanel() {
         const spy = await getSpyMetric(m.fixture_id);
         const total = spy.totalVotes || 0;
 
-        // Exclude Draw calculations to cleanly split 100% between Home and Away in knockouts
         const homeShare = total > 0 ? Math.round((spy.home.votes / total) * 100) : 50;
         const awayShare = total > 0 ? (100 - homeShare) : 50;
 
         const unixTs = Math.floor(new Date(m.kickoff_time).getTime() / 1000);
 
+        // Check if the kickoff time has passed or match is finished
         const kickedOff = new Date() >= new Date(m.kickoff_time);
         const isFinished = m.status === 'FT';
         const isLive = m.status === 'LIVE';
@@ -188,6 +198,7 @@ async function buildMasterPanel() {
         const homeFlag = getFlag(m.home_team);
         const awayFlag = getFlag(m.away_team);
 
+        // Match headers formatted with flags directly next to each nation
         const matchHeader = `${homeFlag} **${m.home_team}**  ⚔️  **${m.away_team}** ${awayFlag}${statusSuffix}`;
         const matchDisplay = (kickedOff || isFinished) ? `~~${matchHeader}~~` : matchHeader;
 
@@ -213,6 +224,7 @@ async function buildMasterPanel() {
     }
   }
 
+  // Filter out matches that have already kicked off/occurred so users can't select them
   const openMatches = upcomingMatches.filter(m => {
     const kickedOff = new Date() >= new Date(m.kickoff_time);
     return !kickedOff && m.status === 'NS';
@@ -241,9 +253,9 @@ async function buildMasterPanel() {
   }
 
   const row1 = {
-    type: 1,
+    type: 1, // ACTION_ROW
     components: [{
-      type: 3,
+      type: 3, // STRING_SELECT
       custom_id: 'select_match',
       placeholder: '🔮 Pick an upcoming match to bet on...',
       options: options,
@@ -252,25 +264,25 @@ async function buildMasterPanel() {
   };
 
   const row2 = {
-    type: 1,
+    type: 1, // ACTION_ROW
     components: [
       {
-        type: 2,
-        style: 2,
+        type: 2, // BUTTON
+        style: 2, // SECONDARY
         label: 'My Predictions',
         custom_id: 'view_my_history',
         emoji: { name: '📊' }
       },
       {
-        type: 2,
-        style: 2,
+        type: 2, // BUTTON
+        style: 2, // SECONDARY
         label: 'Leaderboard',
         custom_id: 'view_leaderboard',
         emoji: { name: '🏆' }
       },
       {
-        type: 2,
-        style: 2,
+        type: 2, // BUTTON
+        style: 2, // SECONDARY
         label: 'How to Play',
         custom_id: 'show_rules',
         emoji: { name: '📖' }
@@ -290,8 +302,9 @@ async function buildMatchDetail(match, dbUser) {
 
   const unixTs = Math.floor(new Date(match.kickoff_time).getTime() / 1000);
 
+  // Dynamic maximum bet calculations (30% of Total Wealth or 300, whichever is lower)
   const history = await getUserHistory(dbUser.discord_id);
-  const activeBets = history.filter(b => b.matches?.status === 'NS');
+  const activeBets = history.filter(b => !b.settled);
   const totalActiveWagered = activeBets.reduce((sum, b) => sum + b.amount_wagered, 0);
   const totalWealth = dbUser.tokens_balance + totalActiveWagered;
   const maxBet = Math.min(Math.floor(totalWealth * 0.30), 300);
@@ -332,7 +345,7 @@ async function buildMatchDetail(match, dbUser) {
   };
 
   const row = {
-    type: 1,
+    type: 1, // ACTION_ROW
     components: [{
       type: 3,
       custom_id: `select_prediction:${match.fixture_id}`,
@@ -427,7 +440,7 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
     fields: [
       {
         name: '💰 Wallet Balance',
-        value: `\`\`\`\n${fmt(user.tokens_balance)} tokens\n\`\`\n`,
+        value: `\`\`\`\n${fmt(user.tokens_balance)} tokens\n\`\`\``,
         inline: true
       },
       {
@@ -447,14 +460,20 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
         : b.team_picked === 'away'
           ? (b.matches?.away_team || 'AWAY')
           : 'DRAW';
-      return `⚽ **${b.matches?.home_team} ⚔️ ${b.matches?.away_team}**\n` +
-             `   Picked: **${displayPick.toUpperCase()}**  •  Wager: **${fmt(b.amount_wagered)}🪙**`;
+      const homeFlag = getFlag(b.matches?.home_team);
+      const awayFlag = getFlag(b.matches?.away_team);
+
+      return `${homeFlag} **${b.matches?.home_team}** ⚔️ **${b.matches?.away_team}** ${awayFlag}\n` +
+             `   Prediction: **${displayPick.toUpperCase()}**  •  Wager: **${fmt(b.amount_wagered)}🪙**`;
     }).join('\n\n');
     embed.fields.push({ name: '\u200b\n🕒 Active Wagers', value: list });
   }
 
   if (pastBets.length > 0) {
     const lines = pastBets.slice(-5).reverse().map(b => {
+      const homeFlag = getFlag(b.matches?.home_team);
+      const awayFlag = getFlag(b.matches?.away_team);
+
       if (b.matches?.winner === 'draw' && b.team_picked !== 'draw') {
         return `↩️  **${b.matches?.home_team} ⚔️ ${b.matches?.away_team}**  •  Refunded (${fmt(b.amount_wagered)}🪙)`;
       }
@@ -464,9 +483,14 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
           ? (b.matches?.away_team || 'AWAY')
           : 'DRAW';
       const won = b.team_picked === b.matches?.winner;
-      return `${won ? '✅' : '❌'}  **${b.matches?.home_team} ⚔️ ${b.matches?.away_team}**  •  ${displayPick.toUpperCase()}  (${fmt(b.amount_wagered)}🪙)`;
-    }).join('\n');
-    embed.fields.push({ name: '\u200b\n📜 Recent Results', value: lines });
+      
+      const resultIcon = won ? '✅' : '❌';
+      const resultText = won ? 'Correct prediction' : 'Incorrect prediction';
+      
+      return `${resultIcon}  ${homeFlag} **${b.matches?.home_team} ${b.matches?.score?.fullTime?.home ?? 0} - ${b.matches?.score?.fullTime?.away ?? 0} ${b.matches?.away_team}** ${awayFlag}\n` +
+             `   Pick: **${displayPick.toUpperCase()}**  •  Result: **${resultText}** (${fmt(b.amount_wagered)}🪙)`;
+    }).join('\n\n');
+    embed.fields.push({ name: '\u200b\n📜 Recent Results (Last 5)', value: lines });
   }
 
   return embed;

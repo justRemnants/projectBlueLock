@@ -76,7 +76,7 @@ async function getBetsForFixture(fixtureId) {
   const { data, error } = await supabase
     .from('bets').select('*').eq('fixture_id', fixtureId);
   if (error) throw error;
-  return data;
+  return d;
 }
 
 async function getSpyMetric(fixtureId) {
@@ -89,9 +89,11 @@ async function getSpyMetric(fixtureId) {
   };
   bets.forEach(b => {
     if (d[b.team_picked]) {
-      d[b.team_picked].tokens += b.amount_wagered;
+      // Free votes virtually add 5 tokens to the statistical display pool
+      const tokenValue = b.amount_wagered === 0 ? 5 : b.amount_wagered;
+      d[b.team_picked].tokens += tokenValue;
       d[b.team_picked].votes += 1;
-      d.totalTokens += b.amount_wagered;
+      d.totalTokens += tokenValue;
       d.totalVotes += 1;
     }
   });
@@ -113,11 +115,17 @@ async function calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, 
     return { estimated: 5, multiplier: 1.0, isFreeVote: true };
   }
 
+  // Start pool calculations with current player's wager
   let totalPool = amountWagered;
   let winningTokens = amountWagered;
+
   otherBets.forEach(b => {
-    totalPool += b.amount_wagered;
-    if (b.team_picked === teamPicked) winningTokens += b.amount_wagered;
+    // Treat other players' Free Votes as a virtual +5 token contribution
+    const virtualWager = b.amount_wagered === 0 ? 5 : b.amount_wagered;
+    totalPool += virtualWager;
+    if (b.team_picked === teamPicked) {
+      winningTokens += virtualWager;
+    }
   });
 
   const voteShare = totalPool > 0 ? winningTokens / totalPool : 0;

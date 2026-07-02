@@ -3,6 +3,7 @@
  *
  * Rate-limit aware sync service configured for Football-Data.org v4 API.
  * Tracks match transitions to automatically process payouts and deliver player DM summaries.
+ * Features a fail-safe sweeper to capture and process historical or backlogged completed wagers.
  */
 
 require('dotenv').config();
@@ -68,7 +69,6 @@ async function getWithThrottling(url) {
  */
 async function sendDM(userId, embed) {
   try {
-    // Step A: Create a DM channel with the recipient
     const channelRes = await axios.post(
       'https://discord.com/api/v10/users/@me/channels',
       { recipient_id: userId },
@@ -76,7 +76,6 @@ async function sendDM(userId, embed) {
     );
     const channelId = channelRes.data.id;
 
-    // Step B: Post the DM embed
     await axios.post(
       `https://discord.com/api/v10/channels/${channelId}/messages`,
       { embeds: [embed] },
@@ -94,7 +93,6 @@ async function sendDM(userId, embed) {
 async function settleMatch(fixtureId, apiMatch) {
   console.log(`[Settlement] Beginning pool processing for completed Match ID: ${fixtureId}`);
 
-  // 1. Determine the winner in standard schema format
   let winner = null;
   if (apiMatch.score?.winner === 'HOME_TEAM') winner = 'home';
   else if (apiMatch.score?.winner === 'AWAY_TEAM') winner = 'away';
@@ -105,29 +103,37 @@ async function settleMatch(fixtureId, apiMatch) {
     return;
   }
 
-  // 2. Fetch all bets placed on this match along with user balances
+  // 1. Fetch only UNSETTLED bets placed on this match along with user balances
   const { data: bets, error } = await supabase
     .from('bets')
     .select('*, users(discord_id, tokens_balance)')
-    .eq('fixture_id', fixtureId);
+    .eq('fixture_id', fixtureId)
+    .eq('settled', false);
 
   if (error || !bets || bets.length === 0) {
-    console.log(`[Settlement] No wagers found to process for Match ID: ${fixtureId}`);
+    console.log(`[Settlement] No unprocessed wagers found for Match ID: ${fixtureId}`);
     return;
   }
 
-  // 3. Calculate pool metric values (excluding free votes from dilution)
+  // 2. Fetch ALL bets on this match to get the mathematically correct, un-isolated pool values
+  const { data: allBets } = await supabase
+    .from('bets')
+    .select('*')
+    .eq('fixture_id', fixtureId);
+
+  // Calculate pool metric values
   let totalPool = 0;
   let winningTokens = 0;
 
-  bets.forEach(b => {
-    totalPool += b.amount_wagered;
+  allBets.forEach(b => {
+    const virtualWager = b.amount_wagered === 0 ? 5 : b.amount_wagered;
+    totalPool += virtualWager;
     if (b.team_picked === winner) {
-      winningTokens += b.amount_wagered;
+      winningTokens += virtualWager;
     }
   });
 
-  const totalVotes = bets.length;
+  const totalVotes = allBets.length;
   const voteShare = totalPool > 0 ? winningTokens / totalPool : 0;
 
   let multiplier = 1.0;
@@ -140,7 +146,7 @@ async function settleMatch(fixtureId, apiMatch) {
 
   const boostedPool = totalPool * multiplier;
 
-  // 4. Update balances and deliver DMs to each participant
+  // 3. Update balances, set bet state to settled, and deliver DMs to each participant
   for (const b of bets) {
     let payout = 0;
     let isRefund = false;
@@ -178,6 +184,12 @@ async function settleMatch(fixtureId, apiMatch) {
       .from('users')
       .update({ tokens_balance: newBalance })
       .eq('discord_id', b.user_id);
+
+    // Mark the bet as settled so it cannot be paid out again
+    await supabase
+      .from('bets')
+      .update({ settled: true })
+      .eq('bet_id', b.bet_id);
 
     // Format results details for DM
     const embedColor = isRefund ? COLORS.blue : isWinner ? COLORS.green : COLORS.red;
@@ -257,7 +269,6 @@ async function syncFixtures() {
     };
   }
 
-  // Filter out any tournament slots that do not have both team names decided yet (TBD matches)
   const activeMatches = matches.filter(m => m.homeTeam?.name && m.awayTeam?.name);
 
   if (activeMatches.length === 0) {
@@ -268,7 +279,6 @@ async function syncFixtures() {
     };
   }
 
-  // Fetch unfinished matches currently recorded in our Supabase database to track transitions
   const { data: dbUnfinished } = await supabase
     .from('matches')
     .select('fixture_id, status')
@@ -305,19 +315,53 @@ async function syncFixtures() {
 
   if (error) throw error;
 
-  // Identify which matches transitioned from uncompleted to FINISHED (FT) on this sync cycle
+  // Identify matches transitioning to FINISHED (FT) on this sync cycle
   const newlyFinished = activeMatches.filter(apiMatch => {
     const dbMatch = dbUnfinished?.find(dm => dm.fixture_id === apiMatch.id.toString());
     return dbMatch && apiMatch.status === 'FINISHED';
   });
 
-  // Execute settlement calculations and DM deliveries for each newly finished match
   for (const match of newlyFinished) {
     try {
       await settleMatch(match.id.toString(), match);
     } catch (settleErr) {
       console.error(`[Settlement Failure] Could not settle Match ID: ${match.id}:`, settleErr.message);
     }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // FAIL-SAFE SWEEPER: Find ANY completed matches with unsettled bets.
+  // ───────────────────────────────────────────────────────────────────────────
+  try {
+    const { data: unsettledBets } = await supabase
+      .from('bets')
+      .select('fixture_id')
+      .eq('settled', false);
+
+    if (unsettledBets && unsettledBets.length > 0) {
+      // Gather unique fixture IDs currently backlogged with unsettled wagers
+      const backloggedFixtureIds = [...new Set(unsettledBets.map(b => b.fixture_id))];
+
+      // Query which of those matches are marked as completed (FT) in your database
+      const { data: completedMatches } = await supabase
+        .from('matches')
+        .select('*')
+        .in('fixture_id', backloggedFixtureIds)
+        .eq('status', 'FT');
+
+      if (completedMatches && completedMatches.length > 0) {
+        console.log(`[Sweeper] Detected ${completedMatches.length} backlogged completed matches containing unsettled bets. Processing...`);
+        
+        for (const match of completedMatches) {
+          const apiMatch = activeMatches.find(am => am.id.toString() === match.fixture_id);
+          if (apiMatch) {
+            await settleMatch(match.fixture_id, apiMatch);
+          }
+        }
+      }
+    }
+  } catch (sweepErr) {
+    console.error(`[Sweeper Error] Automated backlog sweep failed:`, sweepErr.message);
   }
 
   return {

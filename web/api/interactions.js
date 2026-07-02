@@ -202,8 +202,10 @@ async function handleCommand(interaction, res) {
     try {
       const dbUser = await getOrCreateUser(user);
       const history = await getUserHistory(user.id);
-      const activeBets = history.filter(b => b.matches?.status === 'NS');
-      const pastBets = history.filter(b => b.matches?.winner);
+      
+      // Partition wagers accurately based on whether they have been settle-paid in the database
+      const activeBets = history.filter(b => !b.settled);
+      const pastBets = history.filter(b => b.settled);
 
       return sendJson(res, {
         type: R.MESSAGE,
@@ -293,8 +295,9 @@ async function handleComponent(interaction, res) {
     try {
       const dbUser = await getOrCreateUser(user);
       const history = await getUserHistory(user.id);
-      const activeBets = history.filter(b => b.matches?.status === 'NS');
-      const pastBets = history.filter(b => b.matches?.winner);
+      
+      const activeBets = history.filter(b => !b.settled);
+      const pastBets = history.filter(b => b.settled);
 
       return sendJson(res, {
         type: R.MESSAGE,
@@ -374,7 +377,7 @@ async function handleModal(interaction, res) {
       const dbUser = await getOrCreateUser(user);
       const history = await getUserHistory(user.id);
       
-      const otherActiveBets = history.filter(b => b.matches?.status === 'NS' && b.fixture_id !== fixtureId);
+      const otherActiveBets = history.filter(b => !b.settled && b.fixture_id !== fixtureId);
       const totalActiveWagered = otherActiveBets.reduce((sum, b) => sum + b.amount_wagered, 0);
       
       const existingWager = history.find(b => b.fixture_id === fixtureId)?.amount_wagered || 0;
