@@ -2,7 +2,6 @@
   "name": "project-bluelock-web",
   "version": "1.0.0",
   "description": "Project Blue-Lock Web & Serverless Discord Bot",
-  "main": "api/interactions.js",
   "scripts": {
     "register": "node scripts/register-commands.js",
     "dev": "vercel dev"

@@ -76,7 +76,7 @@ async function getBetsForFixture(fixtureId) {
   const { data, error } = await supabase
     .from('bets').select('*').eq('fixture_id', fixtureId);
   if (error) throw error;
-  return d;
+  return data;
 }
 
 async function getSpyMetric(fixtureId) {

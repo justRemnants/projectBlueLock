@@ -2,7 +2,8 @@
  * src/footballApi.js
  *
  * Rate-limit aware sync service configured for Football-Data.org v4 API.
- * Tracks match transitions to automatically process payouts and deliver player DM summaries.
+ * Tracks match transitions to automatically process payouts (treating Free Votes as virtual +5 contributions)
+ * and delivers player DM summaries.
  * Features a fail-safe sweeper to capture and process historical or backlogged completed wagers.
  */
 
@@ -103,7 +104,6 @@ async function settleMatch(fixtureId, apiMatch) {
     return;
   }
 
-  // 1. Fetch only UNSETTLED bets placed on this match along with user balances
   const { data: bets, error } = await supabase
     .from('bets')
     .select('*, users(discord_id, tokens_balance)')
@@ -115,13 +115,11 @@ async function settleMatch(fixtureId, apiMatch) {
     return;
   }
 
-  // 2. Fetch ALL bets on this match to get the mathematically correct, un-isolated pool values
   const { data: allBets } = await supabase
     .from('bets')
     .select('*')
     .eq('fixture_id', fixtureId);
 
-  // Calculate pool metric values
   let totalPool = 0;
   let winningTokens = 0;
 
@@ -146,13 +144,11 @@ async function settleMatch(fixtureId, apiMatch) {
 
   const boostedPool = totalPool * multiplier;
 
-  // 3. Update balances, set bet state to settled, and deliver DMs to each participant
   for (const b of bets) {
     let payout = 0;
     let isRefund = false;
     let isWinner = false;
 
-    // Proportional Base Reward (20% of wager, with +5 tokens backup safety)
     const baseReward = b.amount_wagered === 0 ? 5 : Math.round(b.amount_wagered * 0.20);
 
     if (winner === 'draw') {
@@ -171,6 +167,11 @@ async function settleMatch(fixtureId, apiMatch) {
         } else {
           payout = Math.round((boostedPool / winningTokens) * b.amount_wagered) + baseReward;
         }
+      } else if (b.team_picked === 'draw') {
+        // 🚨 KNOCKOUT STAGE PROTECTIVE FALLBACK:
+        // Automatically refund draw predictions upon match completion
+        isRefund = true;
+        payout = b.amount_wagered;
       } else {
         payout = 0; // Lost standard wager
       }
@@ -179,19 +180,16 @@ async function settleMatch(fixtureId, apiMatch) {
     const currentBalance = b.users?.tokens_balance || 0;
     const newBalance = currentBalance + payout;
 
-    // Save updated balance to database
     await supabase
       .from('users')
       .update({ tokens_balance: newBalance })
       .eq('discord_id', b.user_id);
 
-    // Mark the bet as settled so it cannot be paid out again
     await supabase
       .from('bets')
       .update({ settled: true })
       .eq('bet_id', b.bet_id);
 
-    // Format results details for DM
     const embedColor = isRefund ? COLORS.blue : isWinner ? COLORS.green : COLORS.red;
     const outcomeTitle = isRefund ? '↩️ Match Refunded' : isWinner ? '🎉 Prediction Correct!' : '❌ Prediction Incorrect';
 
@@ -307,7 +305,6 @@ async function syncFixtures() {
     };
   });
 
-  // Perform database update
   const { data: updatedMatches, error } = await supabase
     .from('matches')
     .upsert(upsertData, { onConflict: 'fixture_id' })
@@ -315,7 +312,6 @@ async function syncFixtures() {
 
   if (error) throw error;
 
-  // Identify matches transitioning to FINISHED (FT) on this sync cycle
   const newlyFinished = activeMatches.filter(apiMatch => {
     const dbMatch = dbUnfinished?.find(dm => dm.fixture_id === apiMatch.id.toString());
     return dbMatch && apiMatch.status === 'FINISHED';
@@ -339,10 +335,8 @@ async function syncFixtures() {
       .eq('settled', false);
 
     if (unsettledBets && unsettledBets.length > 0) {
-      // Gather unique fixture IDs currently backlogged with unsettled wagers
       const backloggedFixtureIds = [...new Set(unsettledBets.map(b => b.fixture_id))];
 
-      // Query which of those matches are marked as completed (FT) in your database
       const { data: completedMatches } = await supabase
         .from('matches')
         .select('*')

@@ -19,14 +19,18 @@ Project Blue-Lock is a hybrid Discord Bot and Web Dashboard application for a vi
 
 * **Version Control:** Single Monorepo Repository containing `/bot` and `/web` workspace directories.
 * **Database Engine:** Supabase (Cloud-hosted PostgreSQL platform).
-* **Live Match Data Feeds:** API-Football (via API-Sports gateway). Operating on the Free Tier tier (capped at 100 requests per day) for score calculations and group scheduling.
+* **Live Match Data Feeds:** Football-Data.org (via their free tier `WC` World Cup competition endpoint).
 * **Primary Deployment Architecture (Vercel Serverless Platform):**
-  * **Frontend Web Application:** Automatically builds and deploys from the `/web` subdirectory using Vercel serverless distribution.
+  * **Frontend Web Application:** Serves static files directly from the `/web/public` directory using Vercel's native static asset server.
   * **Discord Bot Runtime:** Configured as a stateless HTTP Webhook receiver endpoint (`/web/api/interactions.js`) hosted natively on Vercel. 
-  * **The 3-Second Timeout Safeguard:** To completely bypass Vercel cold starts and prevent Discord's strict 3-second response timeout, all heavy calculations (Supabase writes/API fetches) **MUST use deferred responses** (`InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE`). The bot instantly acknowledges the ping, then uses the Discord Webhooks API asynchronously to edit/update the panel embeds once calculations complete.
-* **Fallback Backup Architecture (JustRunMy.App):**
-  * In the event of a structural migration, the `/bot` can run a traditional, persistent background event loop (`client.on('interactionCreate')`) hosted on JustRunMy.App. 
-  * *Operational Constraint:** Requires manual interaction token resets every three days to prevent environment sleep states.
+  * **Direct Response Architecture:** To guarantee instant execution and eliminate any possibility of Vercel container freezes, the bot bypasses deferred responses entirely. It executes lightweight database operations within 400ms and returns standard, direct HTTP responses (`R.MESSAGE` or Type 4).
+
+### ⚠️ Monolithic Deployment Failures & Lessons Learned
+During development, hosting the static frontend and the serverless APIs in the same `/web` directory initially failed with a `405 Method Not Allowed` on browser visits and blocked Discord interactions.
+
+1. **The "main" Entrypoint Conflict:** The `/web/package.json` file originally contained the property `"main": "api/interactions.js"`. Under Vercel's Node.js framework preset, defining a `"main"` entrypoint instructs Vercel to treat the entire deployment as a single monolithic Node.js application, routing **all** incoming traffic (including your website `GET` requests) directly to `interactions.js`.
+2. **The Resulting Crash:** Because `interactions.js` is programmed to reject any non-`POST` requests, browser visits were immediately blocked with `405 Method Not Allowed` by the serverless handler itself.
+3. **The Static File-System Solution:** To resolve this, the `"main"` property was deleted from `package.json`, and the static frontend `index.html` was moved inside a dedicated `/web/public/` directory. This instructs Vercel to use isolated, directory-based routing: serving `/web/public/index.html` natively at the root `/` URL and routing `/api/` traffic exclusively to individual, sandboxed serverless handlers.
 
 ---
 
@@ -34,29 +38,24 @@ Project Blue-Lock is a hybrid Discord Bot and Web Dashboard application for a vi
 
 ### Primary Architecture (Vercel Serverless Routing)
 ├── .github/                  # Global GitHub Actions workflows
-├── bot/                      # Discord Interaction Code Assets
+├── bot/                      # Discord Interaction Code Assets (Gateway Client Backup)
 │   ├── src/
-│   │   └── interactions.js   # Main processing logic for webhook payloads
-│   └── package.json          # Serverless execution dependencies
+│   │   └── index.js          # Persistent Background Bot Loop Folder
+│   └── package.json          # Gateway execution dependencies
 └── web/                      # Full-Stack Website Workspace
-    ├── index.html            # Web layout entry point
-    ├── src/                  # Tailwind CSS modules, Leaderboard rows, Profile layouts
-    ├── api/
-    │   └── interactions.js   # Vercel serverless function routing the Discord Webhook
-    ├── package.json          # Core development and bundler configs
-    └── vercel.json           # Secure environment overrides and URL endpoint rules
-
-### Backup Architecture (Traditional Monolith for JustRunMy.App)
-├── .github/                  # Global GitHub Actions workflows
-├── bot/                      # Persistent Background Bot Loop Folder
-│   ├── index.js              # Continuous active event listener loop
-│   ├── database.js           # Shared Supabase pooling initializer
-│   ├── package.json          # Node modules (discord.js, @supabase/supabase-js)
-│   └── Dockerfile            # Container deployment blueprint for JustRunMy.App
-└── web/                      # Static Dashboard Workspace
-    ├── index.html            
+    ├── public/
+    │   └── index.html        # Web layout entry point (serves at root URL)
     ├── src/                  
-    └── package.json          
+    │   ├── database.js       # Web-optimized Supabase pool client
+    │   ├── panel.js          # Unified panel layouts (aligned spy metrics & flags)
+    │   └── footballApi.js    # Sync engine, automated payouts, & DM notifier
+    ├── api/
+    │   ├── interactions.js   # Discord Webhook command handler (direct-response)
+    │   ├── auth.js           # Handles Discord OAuth2 handshakes and session signatures
+    │   ├── bet.js            # Secure web-based wager handler with wealth-bet limitations
+    │   └── config.js         # Serves public Supabase and Discord credentials to the browser
+    ├── package.json          # Dependencies & build scripts (no "main" entrypoint)
+    └── vercel.json           # Secure environment overrides and cron rules
 
 ---
 
@@ -71,16 +70,20 @@ $$Payout = \left(\frac{Boosted Pool}{Winning Tokens}\right) \times Your Bet + Ba
 To protect the economy from printing endless tokens on overwhelmingly obvious matches, the payout multiplier is restricted by the group's exact vote share distribution:
 * **Massive Favorite Wins (Vote Share > 80%):** Pool multiplier drops to **1.0x** (Standard Pool Split, zero artificial scaling).
 * **Normal Outcomes (Vote Share 50% - 80%):** Standard split model (**1.0x** pool boost).
-* **Mild Underdog Upsets (Vote Share 20% - 50%):** Triggers an artificial **1.2x or 1.3x** pool boost out of thin air.
-* **Miracle Underdog Jackpots (Vote Share < 20%):** Triggers a maximum **1.5x ultimate jackpot** pool boost to reward extreme risky strategies.
+* **Mild Underdog Upsets (Vote Share 20% - 50%):** Triggers an artificial **1.1x** pool boost.
+* **Miracle Underdog Jackpots (Vote Share < 20%):** Triggers a maximum **1.2x ultimate jackpot** pool boost.
 
-### 3. Free-Vote System (Bankruptcy Protection)
-* Users possessing exactly 0 tokens (or those refusing to risk their bankroll) can submit a **Free Vote**.
-* Free votes bypass standard math calculations entirely and do not dilute the main wagering token pool.
-* Correct predictions award a flat, hardcoded static reward of **+5 tokens** directly from the system bank.
+### 3. Dynamic Base Reward (20% Wager Ceilings)
+To reward high rollers while maintaining bankruptcy protection, the base reward scales proportionally with risk:
+* **Free Votes (Wager = 0):** Correct predictions award a flat, static **+5 tokens** directly from the system bank.
+* **Standard Bets (Wager > 0):** Correct predictions award a dynamic base reward of **20% of the amount wagered** (rounded to the nearest integer).
 
-### 4. Wager Modification / Re-entry
-Users are allowed to edit active predictions prior to match kickoff. If a user tries to place a bet on an already predicted `fixture_id`, the system prompts a warning confirmation box. Confirming updates the row via a Supabase `UPSERT`, cleanly overwriting the previous bet data record.
+### 4. Maximum Bet Allowed (30% Wealth Ceiling)
+To prevent players from inflating their wagers beyond safety and risking bankruptcy in a single match, wagers are strictly capped. The maximum allowed bet on any single match is calculated dynamically:
+$$\text{Max Bet Allowed} = \min(\lfloor\text{Total Wealth} \times 0.30\rfloor, 300)$$
+Where:
+$$\text{Total Wealth} = \text{Wallet Balance} + \text{All Currently Active Bets}$$
+Because this calculates total wealth dynamically, placing wagers simply shifts tokens from your wallet to active wagers without reducing your baseline wealth. Your maximum bet limit remains perfectly stable throughout an active betting round.
 
 ---
 
@@ -88,24 +91,20 @@ Users are allowed to edit active predictions prior to match kickoff. If a user t
 
 ### Discord Embed Guidelines
 All system messages must output clean, color-coded embeds:
-* **Green:** Operation success and wager confirmations.
-* **Blue:** Master Panel summaries and profile dashboard panels.
-* **Gold:** Milestone jackpot payouts and high-roller returns.
-* **Red:** Error alerts, system warnings, and overwrite confirmations.
+* **Green:** Operation success, wager confirmations, and winning results.
+* **Blue:** Master Panel summaries, profile dashboards, and match refunds.
+* **Gold:** Leaderboard standings, milestones, and high-roller returns.
+* **Red:** Error alerts, system warnings, and failed interactions.
 
 #### The Master Events Panel (The Server Hub)
 An admin-initialized message string that updates dynamically over time.
-* **Time Target:** Displays upcoming matches scheduled for "Today" and "Tomorrow" calculated relative to **Australian Timezones (AEST/AEDT)**.
-* **Formatting:** Uses country flags, team names, and native dynamic Discord timestamps (`<t:TIMESTAMP:F>`) so kickoff parameters localize to each player's device settings.
-* **The Spy Metric:** Embed text updates dynamically to reflect the current live token/vote split distribution across options. Real-world odds strings are omitted to prevent layout clutter.
-* **Component Row Mapping:** To navigate around Discord's 5x5 interaction component limits, individual match buttons are replaced with organized selector dropdowns:
-  * **Dropdown 1 (Match Selector):** Lists scheduled available games. Selection triggers the wager phase.
-  * **Dropdown 2 (Prediction Selector):** Allows picking Home, Away, or Draw.
-  * **Modal Input Box:** Launches a native pop-up textbox demanding the token wager amount (accepts 0 for Free Votes).
-  * **Button A ("Show Estimated Earnings"):** Ephemeral-only response showing projected payout metrics based on the current live pool formula state.
-  * **Button B ("View My History"):** Ephemeral profile embed mapping personal historical wins, losses, and cumulative token changes.
+* **Time Target:** Displays upcoming matches scheduled for "Today" and "Tomorrow" calculated relative to **USA Eastern Time (EST/EDT - America/New_York)**.
+* **Formatting:** Uses country flags, team names, and native dynamic Discord timestamps so kickoff parameters localize to each player's device settings.
+* **The Spy Metric:** Embed text updates dynamically to reflect the current live token/vote split distribution across options. To prevent alignment clipping on narrow mobile screens, team names are shortened dynamically, progress bars are kept to a compact length (6 characters), and names are padded in monospaced blocks.
 
-### 🖥️ Web Dashboard Layout & Full-Stack Capabilities
+---
+
+## 🖥️ Web Dashboard Layout & Full-Stack Capabilities
 The web front-end matches the feature capabilities of the bot, utilizing a premium Dark-Mode sports analytic style built with Tailwind CSS.
 
 * **Discord OAuth2 Login:** Authenticates users via Discord profile tokens. Grabs and synchronizes real user metadata to the database instantly.
@@ -117,20 +116,18 @@ The web front-end matches the feature capabilities of the bot, utilizing a premi
 
 ## 🗄️ Database Schema (Supabase Postgres SQL Script)
 
-> **Note for Execution:** Run the entire block below inside the Supabase SQL Editor. It creates all 3 tables with appropriate relationship constraints, composite primary keys, and auto-incrementing tracking IDs.
-
 ```sql
 -- 1. Setup Users Table
-CREATE TABLE users (
+CREATE TABLE public.users (
     discord_id TEXT PRIMARY KEY,
     username TEXT NOT NULL,
     display_name TEXT,
     avatar_url TEXT,
-    tokens_balance INTEGER DEFAULT 1000
+    tokens_balance INTEGER DEFAULT 500 NOT NULL
 );
 
 -- 2. Setup Matches Table
-CREATE TABLE matches (
+CREATE TABLE public.matches (
     fixture_id TEXT PRIMARY KEY,
     home_team TEXT NOT NULL,
     away_team TEXT NOT NULL,
@@ -140,11 +137,18 @@ CREATE TABLE matches (
 );
 
 -- 3. Setup Bets Table
-CREATE TABLE bets (
+CREATE TABLE public.bets (
     bet_id SERIAL PRIMARY KEY,
-    user_id TEXT REFERENCES users(discord_id) ON DELETE CASCADE,
-    fixture_id TEXT REFERENCES matches(fixture_id) ON DELETE CASCADE,
-    team_picked TEXT CHECK (team_picked IN ('home', 'away', 'draw')),
-    amount_wagered INTEGER NOT NULL,
+    user_id TEXT REFERENCES public.users(discord_id) ON DELETE CASCADE,
+    fixture_id TEXT REFERENCES public.matches(fixture_id) ON DELETE CASCADE,
+    team_picked TEXT NOT NULL CHECK (team_picked IN ('home', 'away', 'draw')),
+    amount_wagered INTEGER NOT NULL CHECK (amount_wagered >= 0),
+    settled BOOLEAN DEFAULT false NOT NULL,
     CONSTRAINT unique_user_fixture UNIQUE (user_id, fixture_id)
+);
+
+-- 4. Setup System Config Table
+CREATE TABLE public.system_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );

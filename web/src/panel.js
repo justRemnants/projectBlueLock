@@ -23,7 +23,7 @@ const COUNTRY_FLAGS = {
   "Mexico": "🇲🇽", "Morocco": "🇲🇦", "Netherlands": "🇳🇱", "Poland": "🇵🇱",
   "Portugal": "🇵🇹", "Qatar": "🇶🇦", "Saudi Arabia": "🇸🇦", "Senegal": "🇸🇳",
   "Serbia": "🇷🇸", "South Korea": "🇰🇷", "Spain": "🇪🇸", "Switzerland": "🇨🇭",
-  "Tunisia": "🇹🇳", "USA": "🇺🇸", "United States": "🇺🇸", "Uruguay": "🇺🇾", "Wales": "🏴󠁧󠁢🇺󠁬󠁳󠁿",
+  "Tunisia": "🇹🇳", "USA": "🇺🇸", "United States": "🇺🇸", "Uruguay": "🇺🇾", "Wales": "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
   "Italy": "🇮🇹", "Sweden": "🇸🇪", "Colombia": "🇨🇴", "Peru": "🇵🇪", "Chile": "🇨🇱", 
   "Nigeria": "🇳🇬", "Algeria": "🇩🇿", "Egypt": "🇪🇬", "New Zealand": "🇳🇿",
   "Norway": "🇳🇴", "Congo DR": "🇨🇩", "DR Congo": "🇨🇩", "Ivory Coast": "🇨🇮", 
@@ -180,6 +180,7 @@ async function buildMasterPanel() {
         const spy = await getSpyMetric(m.fixture_id);
         const total = spy.totalVotes || 0;
 
+        // Exclude Draw calculations to cleanly split 100% between Home and Away in knockouts
         const homeShare = total > 0 ? Math.round((spy.home.votes / total) * 100) : 50;
         const awayShare = total > 0 ? (100 - homeShare) : 50;
 
@@ -440,7 +441,7 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
     fields: [
       {
         name: '💰 Wallet Balance',
-        value: `\`\`\`\n${fmt(user.tokens_balance)} tokens\n\`\`\``,
+        value: `\`\`\`\n${fmt(user.tokens_balance)} tokens\n\`\`\n`,
         inline: true
       },
       {

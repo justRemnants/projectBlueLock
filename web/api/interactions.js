@@ -23,6 +23,7 @@ const PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY;
 const BOT_TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_CLIENT_ID;
 
+// Helper to handle JSON responses safely without Express decorations
 function sendJson(res, data, statusCode = 200) {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json');
@@ -203,7 +204,6 @@ async function handleCommand(interaction, res) {
       const dbUser = await getOrCreateUser(user);
       const history = await getUserHistory(user.id);
       
-      // Partition wagers accurately based on whether they have been settle-paid in the database
       const activeBets = history.filter(b => !b.settled);
       const pastBets = history.filter(b => b.settled);
 
@@ -245,30 +245,47 @@ async function handleComponent(interaction, res) {
       return sendJson(res, { type: R.DEFERRED_UPDATE });
     }
 
+    // 1. Instantly respond with DEFERRED_UPDATE to clear the select menu visual selection in the Discord client
+    sendJson(res, { type: R.DEFERRED_UPDATE });
+
     try {
       const dbUser = await getOrCreateUser(user);
       const matches = await getActiveMatches();
       const match = matches.find(m => m.fixture_id === fixtureId);
-      if (!match) return sendJson(res, errorEmbed('Match not found in the database.'));
+      
+      if (!match) {
+        await axios.post(`https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`, {
+          ...errorEmbed('Match not found in the database.'),
+          flags: FLAGS.EPHEMERAL
+        });
+        return;
+      }
 
       const kickedOff = new Date() >= new Date(match.kickoff_time);
       if (kickedOff || match.status !== 'NS') {
-        return sendJson(res, errorEmbed('This match has already kicked off! Predictions are locked.'));
+        await axios.post(`https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`, {
+          ...errorEmbed('This match has already kicked off! Predictions are locked.'),
+          flags: FLAGS.EPHEMERAL
+        });
+        return;
       }
 
       const detail = await buildMatchDetail(match, dbUser);
       
-      return sendJson(res, {
-        type: R.MESSAGE,
-        data: {
-          flags: FLAGS.EPHEMERAL,
+      // 2. Post the ephemeral match details card asynchronously using the interaction token
+      await axios.post(
+        `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`,
+        {
           embeds: detail.embeds,
-          components: detail.components
-        }
-      });
+          components: detail.components,
+          flags: FLAGS.EPHEMERAL
+        },
+        { headers: { 'Content-Type': 'application/json' } }
+      );
     } catch (err) {
-      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
+      console.error('Async select_match error:', err.response?.data || err.message);
     }
+    return;
   }
 
   if (customId.startsWith('select_prediction:')) {
