@@ -2,6 +2,7 @@
  * web/api/interactions.js
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
+ * Refactored to use direct responses, ensuring 100% serverless process stability.
  */
 
 require('dotenv').config();
@@ -245,47 +246,31 @@ async function handleComponent(interaction, res) {
       return sendJson(res, { type: R.DEFERRED_UPDATE });
     }
 
-    // 1. Instantly respond with DEFERRED_UPDATE to clear the select menu visual selection in the Discord client
-    sendJson(res, { type: R.DEFERRED_UPDATE });
-
     try {
       const dbUser = await getOrCreateUser(user);
       const matches = await getActiveMatches();
       const match = matches.find(m => m.fixture_id === fixtureId);
-      
-      if (!match) {
-        await axios.post(`https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`, {
-          ...errorEmbed('Match not found in the database.'),
-          flags: FLAGS.EPHEMERAL
-        });
-        return;
-      }
+      if (!match) return sendJson(res, errorEmbed('Match not found in the database.'));
 
       const kickedOff = new Date() >= new Date(match.kickoff_time);
       if (kickedOff || match.status !== 'NS') {
-        await axios.post(`https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`, {
-          ...errorEmbed('This match has already kicked off! Predictions are locked.'),
-          flags: FLAGS.EPHEMERAL
-        });
-        return;
+        return sendJson(res, errorEmbed('This match has already kicked off! Predictions are locked.'));
       }
 
       const detail = await buildMatchDetail(match, dbUser);
       
-      // 2. Post the ephemeral match details card asynchronously using the interaction token
-      await axios.post(
-        `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`,
-        {
+      // Respond DIRECTLY in the HTTP payload to guarantee stable execution
+      return sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          flags: FLAGS.EPHEMERAL,
           embeds: detail.embeds,
-          components: detail.components,
-          flags: FLAGS.EPHEMERAL
-        },
-        { headers: { 'Content-Type': 'application/json' } }
-      );
+          components: detail.components
+        }
+      });
     } catch (err) {
-      console.error('Async select_match error:', err.response?.data || err.message);
+      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
     }
-    return;
   }
 
   if (customId.startsWith('select_prediction:')) {
