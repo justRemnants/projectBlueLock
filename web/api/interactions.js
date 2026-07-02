@@ -2,8 +2,6 @@
  * web/api/interactions.js
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
- * Refactored to eliminate deferred responses, preventing serverless freezes.
- * Fully integrates 30% wealth bet validation ceilings on wager modal submissions.
  */
 
 require('dotenv').config();
@@ -13,7 +11,7 @@ const axios = require('axios');
 const {
   getOrCreateUser, getActiveMatches,
   calculateEstimatedEarnings, placeBet,
-  getUserHistory, savePanelMessage, getPanelMessage
+  getUserHistory, savePanelMessage, getPanelMessage, supabase
 } = require('../src/database');
 const { syncFixtures, syncMockFixtures, checkApiStatus } = require('../src/footballApi');
 const {
@@ -25,7 +23,6 @@ const PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY;
 const BOT_TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_CLIENT_ID;
 
-// Helper to handle JSON responses safely without Express decorations
 function sendJson(res, data, statusCode = 200) {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json');
@@ -70,6 +67,29 @@ function errorEmbed(msg) {
   };
 }
 
+async function buildLeaderboardEmbed() {
+  const { data: users, error } = await supabase
+    .from('users')
+    .select('username, display_name, tokens_balance')
+    .order('tokens_balance', { ascending: false })
+    .limit(10);
+
+  if (error || !users) throw new Error('Failed to retrieve standings.');
+
+  const lines = users.map((u, i) => {
+    const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `\`#${i+1}\``;
+    const name = u.display_name || u.username;
+    return `${medal} **${name}** · \`${fmt(u.tokens_balance)} tokens\``;
+  });
+
+  return {
+    color: COLORS.gold,
+    title: '🏆  Leaderboard Standings  •  Project Blue-Lock',
+    description: lines.join('\n') || '*No registered competitors yet.*',
+    timestamp: new Date().toISOString()
+  };
+}
+
 const T = { PING: 1, COMMAND: 2, COMPONENT: 3, MODAL_SUBMIT: 5 };
 const R = { PONG: 1, MESSAGE: 4, DEFERRED_MESSAGE: 5, DEFERRED_UPDATE: 6, UPDATE_MESSAGE: 7, MODAL: 9 };
 const FLAGS = { EPHEMERAL: 64 };
@@ -83,7 +103,6 @@ async function handleCommand(interaction, res) {
     try {
       const panelData = await buildMasterPanel();
       
-      // Post the panel directly to the channel using REST API
       const response = await axios.post(
         `https://discord.com/api/v10/channels/${channelId}/messages`,
         panelData,
@@ -197,6 +216,21 @@ async function handleCommand(interaction, res) {
       return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
     }
   }
+
+  if (name === 'leaderboard') {
+    try {
+      const embed = await buildLeaderboardEmbed();
+      return sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          flags: FLAGS.EPHEMERAL,
+          embeds: [embed]
+        }
+      });
+    } catch (err) {
+      return sendJson(res, errorEmbed(err.message));
+    }
+  }
 }
 
 async function handleComponent(interaction, res) {
@@ -215,7 +249,6 @@ async function handleComponent(interaction, res) {
       const match = matches.find(m => m.fixture_id === fixtureId);
       if (!match) return sendJson(res, errorEmbed('Match not found in the database.'));
 
-      // Check if the match is already kicked off before letting them render the detail view
       const kickedOff = new Date() >= new Date(match.kickoff_time);
       if (kickedOff || match.status !== 'NS') {
         return sendJson(res, errorEmbed('This match has already kicked off! Predictions are locked.'));
@@ -275,6 +308,21 @@ async function handleComponent(interaction, res) {
     }
   }
 
+  if (customId === 'view_leaderboard') {
+    try {
+      const embed = await buildLeaderboardEmbed();
+      return sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          flags: FLAGS.EPHEMERAL,
+          embeds: [embed]
+        }
+      });
+    } catch (err) {
+      return sendJson(res, errorEmbed(err.message));
+    }
+  }
+
   if (customId === 'show_rules') {
     return sendJson(res, {
       type: R.MESSAGE,
@@ -326,14 +374,11 @@ async function handleModal(interaction, res) {
       const dbUser = await getOrCreateUser(user);
       const history = await getUserHistory(user.id);
       
-      // Filter active bets excluding the match being edited (if updating a bet)
       const otherActiveBets = history.filter(b => b.matches?.status === 'NS' && b.fixture_id !== fixtureId);
       const totalActiveWagered = otherActiveBets.reduce((sum, b) => sum + b.amount_wagered, 0);
       
-      // Fetching original wager if updating
       const existingWager = history.find(b => b.fixture_id === fixtureId)?.amount_wagered || 0;
       
-      // Calculate Total Wealth based on the baseline assets (Wallet + Other active bets + previous wager of this match)
       const totalWealth = dbUser.tokens_balance + totalActiveWagered + existingWager;
       const maxBet = Math.min(Math.floor(totalWealth * 0.30), 300);
 
@@ -364,7 +409,6 @@ async function handleModal(interaction, res) {
         }
       });
 
-      // Update panel configuration in background
       await refreshPanel();
     } catch (err) {
       return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));

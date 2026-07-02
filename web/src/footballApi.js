@@ -2,8 +2,7 @@
  * src/footballApi.js
  *
  * Rate-limit aware sync service configured for Football-Data.org v4 API.
- * Safely inspects headers (X-Requests-Available-Minute, X-RequestCounter-Reset) to handle throttling
- * and filters out undecided placeholder matches to prevent database constraint errors.
+ * Tracks match transitions to automatically process payouts and deliver player DM summaries.
  */
 
 require('dotenv').config();
@@ -11,6 +10,17 @@ const axios = require('axios');
 const { supabase } = require('./database');
 
 const API_KEY = process.env.FOOTBALL_DATA_KEY;
+const BOT_TOKEN = process.env.DISCORD_TOKEN;
+
+const COLORS = {
+  blue: 0x1a6bff,
+  green: 0x00cc66,
+  red: 0xff3333
+};
+
+function fmt(n) {
+  return typeof n === 'number' ? n.toLocaleString() : '0';
+}
 
 /**
  * Throttling-aware Axios GET Request wrapper for Football-Data.org
@@ -26,8 +36,6 @@ async function getWithThrottling(url) {
     });
 
     const headers = response.headers;
-    
-    // Normalize headers (axios returns lowercase keys)
     const requestsAvailable = parseInt(
       headers['x-requests-available-minute'] || 
       headers['x-requestsavailable'] || 
@@ -56,7 +64,180 @@ async function getWithThrottling(url) {
 }
 
 /**
+ * Securely delivers a direct message (DM) embed to a specific user via Discord REST API.
+ */
+async function sendDM(userId, embed) {
+  try {
+    // Step A: Create a DM channel with the recipient
+    const channelRes = await axios.post(
+      'https://discord.com/api/v10/users/@me/channels',
+      { recipient_id: userId },
+      { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+    );
+    const channelId = channelRes.data.id;
+
+    // Step B: Post the DM embed
+    await axios.post(
+      `https://discord.com/api/v10/channels/${channelId}/messages`,
+      { embeds: [embed] },
+      { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+    );
+    console.log(`[Settlement DM] Successfully delivered summary to user ${userId}`);
+  } catch (err) {
+    console.warn(`[Settlement DM Warning] Could not deliver DM to user ${userId} (They may have closed DMs):`, err.response?.data || err.message);
+  }
+}
+
+/**
+ * Processes payouts and logs DM embeds for a completed World Cup fixture.
+ */
+async function settleMatch(fixtureId, apiMatch) {
+  console.log(`[Settlement] Beginning pool processing for completed Match ID: ${fixtureId}`);
+
+  // 1. Determine the winner in standard schema format
+  let winner = null;
+  if (apiMatch.score?.winner === 'HOME_TEAM') winner = 'home';
+  else if (apiMatch.score?.winner === 'AWAY_TEAM') winner = 'away';
+  else if (apiMatch.score?.winner === 'DRAW') winner = 'draw';
+
+  if (!winner) {
+    console.warn(`[Settlement Skipped] No designated winner received for Match ID: ${fixtureId}`);
+    return;
+  }
+
+  // 2. Fetch all bets placed on this match along with user balances
+  const { data: bets, error } = await supabase
+    .from('bets')
+    .select('*, users(discord_id, tokens_balance)')
+    .eq('fixture_id', fixtureId);
+
+  if (error || !bets || bets.length === 0) {
+    console.log(`[Settlement] No wagers found to process for Match ID: ${fixtureId}`);
+    return;
+  }
+
+  // 3. Calculate pool metric values (excluding free votes from dilution)
+  let totalPool = 0;
+  let winningTokens = 0;
+
+  bets.forEach(b => {
+    totalPool += b.amount_wagered;
+    if (b.team_picked === winner) {
+      winningTokens += b.amount_wagered;
+    }
+  });
+
+  const totalVotes = bets.length;
+  const voteShare = totalPool > 0 ? winningTokens / totalPool : 0;
+
+  let multiplier = 1.0;
+  if (winningTokens < totalPool && winner !== 'draw') {
+    if (voteShare > 0.80) multiplier = 1.0;
+    else if (voteShare >= 0.50) multiplier = 1.0;
+    else if (voteShare >= 0.20) multiplier = 1.10;
+    else multiplier = 1.20;
+  }
+
+  const boostedPool = totalPool * multiplier;
+
+  // 4. Update balances and deliver DMs to each participant
+  for (const b of bets) {
+    let payout = 0;
+    let isRefund = false;
+    let isWinner = false;
+
+    // Proportional Base Reward (20% of wager, with +5 tokens backup safety)
+    const baseReward = b.amount_wagered === 0 ? 5 : Math.round(b.amount_wagered * 0.20);
+
+    if (winner === 'draw') {
+      if (b.team_picked === 'draw') {
+        isWinner = true;
+        payout = b.amount_wagered + baseReward; // Draws run on 1.0x pool
+      } else {
+        isRefund = true;
+        payout = b.amount_wagered; // Home/Away predictions get a 100% refund
+      }
+    } else {
+      if (b.team_picked === winner) {
+        isWinner = true;
+        if (b.amount_wagered === 0) {
+          payout = 5; // Free Vote payout flat rate
+        } else {
+          payout = Math.round((boostedPool / winningTokens) * b.amount_wagered) + baseReward;
+        }
+      } else {
+        payout = 0; // Lost standard wager
+      }
+    }
+
+    const currentBalance = b.users?.tokens_balance || 0;
+    const newBalance = currentBalance + payout;
+
+    // Save updated balance to database
+    await supabase
+      .from('users')
+      .update({ tokens_balance: newBalance })
+      .eq('discord_id', b.user_id);
+
+    // Format results details for DM
+    const embedColor = isRefund ? COLORS.blue : isWinner ? COLORS.green : COLORS.red;
+    const outcomeTitle = isRefund ? '↩️ Match Refunded' : isWinner ? '🎉 Prediction Correct!' : '❌ Prediction Incorrect';
+
+    const displayPick = b.team_picked === 'home'
+      ? apiMatch.homeTeam.name.toUpperCase()
+      : b.team_picked === 'away'
+        ? apiMatch.awayTeam.name.toUpperCase()
+        : 'DRAW';
+
+    const netChange = payout - b.amount_wagered;
+    const netChangeStr = isRefund
+      ? `Refunded (+0 🪙)`
+      : netChange >= 0
+        ? `+${fmt(netChange)} 🪙`
+        : `-${fmt(Math.abs(netChange))} 🪙`;
+
+    const dmEmbed = {
+      color: embedColor,
+      title: `${outcomeTitle}  •  ${apiMatch.homeTeam.name} ⚔️ ${apiMatch.awayTeam.name}`,
+      description: `The match concluded with a final score of **${apiMatch.score?.fullTime?.home ?? 0} - ${apiMatch.score?.fullTime?.away ?? 0}**.\n\u200b`,
+      fields: [
+        {
+          name: '🔮 Your Prediction',
+          value: `\`${displayPick}\``,
+          inline: true
+        },
+        {
+          name: '🪙 Your Wager',
+          value: `\`${b.amount_wagered === 0 ? 'Free Vote' : fmt(b.amount_wagered) + ' tokens'}\``,
+          inline: true
+        },
+        {
+          name: '⚡ Multiplier Applied',
+          value: `\`${b.amount_wagered === 0 ? 'N/A' : multiplier.toFixed(2) + 'x'}\``,
+          inline: true
+        },
+        {
+          name: '💰 Wager Outcome',
+          value: `\`${netChangeStr}\``,
+          inline: true
+        },
+        {
+          name: '💵 New Balance',
+          value: `\`${fmt(newBalance)} tokens\``,
+          inline: true
+        }
+      ],
+      footer: { text: 'Thank you for playing Project Blue-Lock! 🍀' },
+      timestamp: new Date().toISOString()
+    };
+
+    await sendDM(b.user_id, dmEmbed);
+  }
+}
+
+/**
  * Fetch all World Cup fixtures from Football-Data.org and upsert into Supabase.
+ * Checks for matches transitioning to completed status and triggers automated settlement.
  */
 async function syncFixtures() {
   let response;
@@ -87,14 +268,18 @@ async function syncFixtures() {
     };
   }
 
+  // Fetch unfinished matches currently recorded in our Supabase database to track transitions
+  const { data: dbUnfinished } = await supabase
+    .from('matches')
+    .select('fixture_id, status')
+    .neq('status', 'FT');
+
   const upsertData = activeMatches.map(m => {
-    // Map Football-Data status strings to local schema format
     let status = 'NS';
     if (m.status === 'FINISHED') status = 'FT';
     else if (['IN_PLAY', 'PAUSED', 'LIVE'].includes(m.status)) status = 'LIVE';
     else if (m.status === 'POSTPONED') status = 'PST';
 
-    // Map winner strings
     let winner = null;
     if (status === 'FT') {
       if (m.score?.winner === 'HOME_TEAM') winner = 'home';
@@ -112,17 +297,33 @@ async function syncFixtures() {
     };
   });
 
-  const { data, error } = await supabase
+  // Perform database update
+  const { data: updatedMatches, error } = await supabase
     .from('matches')
     .upsert(upsertData, { onConflict: 'fixture_id' })
     .select();
 
   if (error) throw error;
 
+  // Identify which matches transitioned from uncompleted to FINISHED (FT) on this sync cycle
+  const newlyFinished = activeMatches.filter(apiMatch => {
+    const dbMatch = dbUnfinished?.find(dm => dm.fixture_id === apiMatch.id.toString());
+    return dbMatch && apiMatch.status === 'FINISHED';
+  });
+
+  // Execute settlement calculations and DM deliveries for each newly finished match
+  for (const match of newlyFinished) {
+    try {
+      await settleMatch(match.id.toString(), match);
+    } catch (settleErr) {
+      console.error(`[Settlement Failure] Could not settle Match ID: ${match.id}:`, settleErr.message);
+    }
+  }
+
   return {
     success: true,
-    count: data.length,
-    message: `Synced **${data.length}** World Cup fixtures from Football-Data.org.`
+    count: updatedMatches.length,
+    message: `Synced **${updatedMatches.length}** World Cup fixtures from Football-Data.org. Settle-processed **${newlyFinished.length}** newly finished matches.`
   };
 }
 

@@ -2,14 +2,6 @@
  * scripts/register-commands.js
  *
  * Run this script ONCE to register slash commands with Discord.
- * This replaces the on-startup command registration from the persistent bot.
- *
- * Usage:
- *   cd web
- *   node scripts/register-commands.js
- *
- * Set DISCORD_GUILD_ID to register guild-specific commands instantly (for testing).
- * Leave it empty to register global commands (takes up to 1 hour to propagate).
  */
 
 require('dotenv').config({ path: '../bot/.env' }); // reads the bot's .env
@@ -26,23 +18,27 @@ const commands = [
   },
   {
     name: 'sync-matches',
-    description: 'Sync World Cup 2026 fixtures from API-Football.',
+    description: 'Sync World Cup 2026 fixtures from Football-Data.org.',
     options: [
       {
         type: 5, // BOOLEAN
         name: 'mock',
-        description: 'Use mock match data instead of live API-Football feed',
+        description: 'Use mock match data instead of live Football-Data feed',
         required: false
       }
     ]
   },
   {
     name: 'check-api',
-    description: 'Check API-Football key status and subscription details.'
+    description: 'Check Football-Data.org key status and details.'
   },
   {
     name: 'profile',
     description: 'View your token balance and prediction history.'
+  },
+  {
+    name: 'leaderboard',
+    description: 'View the top 10 players on the server.'
   }
 ];
 

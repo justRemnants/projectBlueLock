@@ -10,7 +10,6 @@ const { createClient } = require('@supabase/supabase-js');
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 
-// Create client with fallbacks so a missing env variable doesn't crash Vercel at compile-time
 const supabase = createClient(
   supabaseUrl || 'https://placeholder.supabase.co',
   supabaseKey || 'placeholder_key'
@@ -39,7 +38,7 @@ async function getOrCreateUser(user) {
         username: user.username,
         display_name: displayName,
         avatar_url: avatarUrl(user.id, avatarHash),
-        tokens_balance: 500 // Updated starting balance to 500
+        tokens_balance: 500
       })
       .select('*')
       .single();
@@ -129,7 +128,9 @@ async function calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, 
   }
 
   const boostedPool = totalPool * multiplier;
-  const baseReward = amountWagered < 20 ? 5 : 20;
+  
+  // Dynamic base reward: 20% of the amount wagered
+  const baseReward = Math.round(amountWagered * 0.20);
 
   const estimated = winningTokens > 0 
     ? Math.round((boostedPool / winningTokens) * amountWagered) + baseReward
