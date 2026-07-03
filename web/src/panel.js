@@ -23,7 +23,7 @@ const COLORS = {
 const COUNTRY_FLAGS = {
   "Argentina": "🇦🇷", "Australia": "🇦🇺", "Belgium": "🇧🇪", "Brazil": "🇧🇷",
   "Canada": "🇨🇦", "Cameroon": "🇨🇲", "Costa Rica": "🇨🇷", "Croatia": "🇭🇷",
-  "Denmark": "🇩🇰", "Ecuador": "🇪🇨", "England": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "France": "🇫🇷",
+  "Denmark": "🇩🇰", "Ecuador": "🇪🇨", "England": "🏴󠁧󠁢🇪󠁮󠁧󠁿", "France": "🇫🇷",
   "Germany": "🇩🇪", "Ghana": "🇬🇭", "Iran": "🇮🇷", "Japan": "🇯🇵",
   "Mexico": "🇲🇽", "Morocco": "🇲🇦", "Netherlands": "🇳🇱", "Poland": "🇵🇱",
   "Portugal": "🇵🇹", "Qatar": "🇶🇦", "Saudi Arabia": "🇸🇦", "Senegal": "🇸🇳",
@@ -490,59 +490,76 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
 
 /**
  * Builds the interactive, paginated, and sortable global betting history console
+ * Optimized to perform sorting, filtering, and pagination directly in Supabase.
  */
 async function buildAdminHistoryPage(page = 1, sortBy = 'date_asc') {
-  // 1. Reverted to standard joins to prevent PostgREST 400 Bad Request constraint errors
-  const { data: bets, error } = await supabase
+  // 1. Initialize the query with exact count tracking
+  let query = supabase
     .from('bets')
     .select(`
       *,
       users ( username, display_name ),
       matches ( home_team, away_team, kickoff_time, status, winner )
-    `);
+    `, { count: 'exact' });
 
-  if (error || !bets) throw new Error('Failed to retrieve history logs.');
-
-  let sorted = [...bets];
-  
-  if (sortBy === 'user_asc') {
-    sorted.sort((a, b) => {
-      const nameA = (a.users?.display_name || a.users?.username || '').toLowerCase();
-      const nameB = (b.users?.display_name || b.users?.username || '').toLowerCase();
-      return nameA.localeCompare(nameB);
-    });
-  } else if (sortBy === 'date_desc') {
-    sorted.sort((a, b) => new Date(b.matches?.kickoff_time) - new Date(a.matches?.kickoff_time));
-  } else if (sortBy === 'date_asc') {
-    sorted.sort((a, b) => new Date(a.matches?.kickoff_time) - new Date(b.matches?.kickoff_time));
-  } else if (sortBy === 'unsettled') {
-    sorted = sorted.filter(b => !b.settled);
+  // 2. Database-level filtering
+  if (sortBy === 'unsettled') {
+    query = query.eq('settled', false);
   } else if (sortBy === 'settled') {
-    sorted = sorted.filter(b => b.settled);
+    query = query.eq('settled', true);
   }
 
-  const itemsPerPage = 5;
-  const totalPages = Math.max(1, Math.ceil(sorted.length / itemsPerPage));
-  const currentPage = Math.min(Math.max(1, page), totalPages);
-  
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const pageItems = sorted.slice(startIndex, startIndex + itemsPerPage);
+  // 3. Database-level sorting (fallback to bet_id chronology)
+  if (sortBy === 'date_desc') {
+    query = query.order('bet_id', { ascending: false });
+  } else if (sortBy === 'date_asc') {
+    query = query.order('bet_id', { ascending: true });
+  } else if (sortBy === 'user_asc') {
+    query = query.order('user_id', { ascending: true });
+  } else {
+    // Default fallback order
+    query = query.order('bet_id', { ascending: true });
+  }
 
+  // 4. Database-level pagination (Only fetch 5 items at a time)
+  const itemsPerPage = 5;
+  const startIndex = (page - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage - 1;
+  query = query.range(startIndex, endIndex);
+
+  const { data: pageItems, error, count } = await query;
+
+  if (error || !pageItems) {
+    console.error('[Database Error in History Panel]:', error);
+    throw new Error('Failed to retrieve history logs.');
+  }
+
+  const totalPages = Math.max(1, Math.ceil((count || 0) / itemsPerPage));
+  const currentPage = Math.min(Math.max(1, page), totalPages);
+
+  // 5. Build lines with defensive safety guards
   const lines = pageItems.map((b, idx) => {
     const player = b.users?.display_name || b.users?.username || 'Unknown';
     const isFree = b.amount_wagered === 0;
     const wagerStr = isFree ? 'Free Vote' : `${fmt(b.amount_wagered)} 🪙`;
     
+    // Safety checks against orphan bets or deleted match fixtures
+    const homeTeamName = b.matches?.home_team || 'Unknown';
+    const awayTeamName = b.matches?.away_team || 'Unknown';
     const homeFlag = getFlag(b.matches?.home_team);
     const awayFlag = getFlag(b.matches?.away_team);
-    const dateLabel = new Date(b.matches?.kickoff_time).toLocaleDateString('en-US', {
-      timeZone: 'America/New_York', month: 'short', day: 'numeric'
-    });
+    
+    const kickoff = b.matches?.kickoff_time;
+    const dateLabel = kickoff
+      ? new Date(kickoff).toLocaleDateString('en-US', {
+          timeZone: 'America/New_York', month: 'short', day: 'numeric'
+        })
+      : 'No Date';
 
     const displayPick = b.team_picked === 'home'
-      ? shortenTeamName(b.matches?.home_team)
+      ? shortenTeamName(homeTeamName)
       : b.team_picked === 'away'
-        ? shortenTeamName(b.matches?.away_team)
+        ? shortenTeamName(awayTeamName)
         : 'DRAW';
 
     let statusLabel = '';
@@ -556,19 +573,20 @@ async function buildAdminHistoryPage(page = 1, sortBy = 'date_asc') {
     }
 
     return `\`#${startIndex + idx + 1}\` **${player}** • ${dateLabel}\n` +
-           `${homeFlag} **${b.matches?.home_team}** vs **${b.matches?.away_team}** ${awayFlag}\n` +
+           `${homeFlag} **${homeTeamName}** vs **${awayTeamName}** ${awayFlag}\n` +
            `   Pick: **${displayPick.toUpperCase()}** • Wager: **${wagerStr}** • **${statusLabel}**`;
   });
 
   const embed = {
     color: COLORS.blue,
     title: '📊  Global Betting Logs  •  Admin Console',
-    description: `Current Filter: \`${sortBy.replace('_', ' ').toUpperCase()}\`\n\n` + (lines.join('\n\n') || '*No wagers match the selected filter.*'),
+    description: `Current Filter: \`${sortBy.replace('_', ' ').toUpperCase()}\`\n\n` + 
+                 (lines.join('\n\n') || '*No wagers match the selected filter.*'),
     footer: { text: `Page ${currentPage} of ${totalPages}  •  Click buttons below to navigate` },
     timestamp: new Date().toISOString()
   };
 
-  // 3. Construct Pagination Row (Buttons)
+  // 6. Pagination Controls (Buttons)
   const row1 = {
     type: 1, // ACTION_ROW
     components: [
@@ -591,7 +609,7 @@ async function buildAdminHistoryPage(page = 1, sortBy = 'date_asc') {
     ]
   };
 
-  // 4. Construct Sort & Filter Selector Row (Select Menu configured with chronological Match Date and A-Z Player sorting)
+  // 7. Sort & Filter Select Menu
   const row2 = {
     type: 1, // ACTION_ROW
     components: [{

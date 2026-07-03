@@ -2,8 +2,7 @@
  * web/api/interactions.js
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
- * Refactored to use direct responses, ensuring 100% serverless process stability.
- * Configured with strict 8-second request timeouts and sequential panel refresh ordering.
+ * Refactored to use direct responses and strict 8-second request timeout protections.
  */
 
 require('dotenv').config();
@@ -152,7 +151,7 @@ async function handleCommand(interaction, res) {
           "1. **Channel Visibility:** Ensure the bot's role has **View Channel** allowed.\n" +
           "2. **Scopes:** Ensure you authorized the bot with both `bot` and `applications.commands` checked.";
       } else {
-        errorDetails = `Failed to build the panel: \`\`\`\n${discordMsg || err.message}\n\`\`\`;`;
+        errorDetails = "Failed to build the panel: ```\n" + (discordMsg || err.message) + "\n```";
       }
 
       return sendJson(res, errorEmbed(errorDetails));
@@ -163,15 +162,9 @@ async function handleCommand(interaction, res) {
     const useMock = interaction.data.options?.find(o => o.name === 'mock')?.value ?? false;
     try {
       const result = useMock ? await syncMockFixtures() : await syncFixtures();
-      
-      // 1. Await panel refresh BEFORE sending the success response to avoid Vercel process freezing
-      if (result.success) {
-        await refreshPanel();
-      }
-
       const color = result.success ? COLORS.green : COLORS.red;
 
-      return sendJson(res, {
+      sendJson(res, {
         type: R.MESSAGE,
         data: {
           flags: FLAGS.EPHEMERAL,
@@ -183,9 +176,14 @@ async function handleCommand(interaction, res) {
           }]
         }
       });
+
+      if (result.success) {
+        await refreshPanel();
+      }
     } catch (err) {
-      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
+      return sendJson(res, errorEmbed("```\n" + err.message + "\n```"));
     }
+    return;
   }
 
   if (name === 'check-api') {
@@ -204,7 +202,7 @@ async function handleCommand(interaction, res) {
         }
       });
     } catch (err) {
-      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
+      return sendJson(res, errorEmbed("```\n" + err.message + "\n```"));
     }
   }
 
@@ -224,7 +222,7 @@ async function handleCommand(interaction, res) {
         }
       });
     } catch (err) {
-      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
+      return sendJson(res, errorEmbed("```\n" + err.message + "\n```"));
     }
   }
 
@@ -333,7 +331,7 @@ async function handleComponent(interaction, res) {
         }
       });
     } catch (err) {
-      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
+      return sendJson(res, errorEmbed("```\n" + err.message + "\n```"));
     }
   }
 
@@ -373,7 +371,7 @@ async function handleComponent(interaction, res) {
         }
       });
     } catch (err) {
-      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
+      return sendJson(res, errorEmbed("```\n" + err.message + "\n```"));
     }
   }
 
@@ -481,7 +479,7 @@ async function handleModal(interaction, res) {
         }
       });
     } catch (err) {
-      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
+      return sendJson(res, errorEmbed("```\n" + err.message + "\n```"));
     }
   }
 }

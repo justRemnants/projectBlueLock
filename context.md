@@ -12,6 +12,7 @@ Project Blue-Lock is a hybrid Discord Bot and Web Dashboard application for a vi
 * **Asset-Light UI:** Avoid dense text commands. The Discord interface relies strictly on an interactive, color-coded, "Panel-driven" layout using dropdown components and modals.
 * **Unified Database State:** A single cloud database acts as the synchronized backbone for both the active Discord bot and the interactive web frontend dashboard.
 * **Frictionless Auth:** The web dashboard utilizes native Discord OAuth2 login, avoiding traditional password administration entirely and enabling rich user profiles.
+* ⚠️ **Development Status Update:** The Web Dashboard component of Project Blue-Lock is currently scrapped/suspended for now. All active development, maintenance, and features are focused strictly on the Discord Bot ecosystem. The frontend specifications are preserved below for future reference, but are currently disabled in production.
 
 ---
 
@@ -37,25 +38,36 @@ During development, hosting the static frontend and the serverless APIs in the s
 ## 📁 Repository Directory Structure
 
 ### Primary Architecture (Vercel Serverless Routing)
-├── .github/                  # Global GitHub Actions workflows
-├── bot/                      # Discord Interaction Code Assets (Gateway Client Backup)
-│   ├── src/
-│   │   └── index.js          # Persistent Background Bot Loop Folder
-│   └── package.json          # Gateway execution dependencies
-└── web/                      # Full-Stack Website Workspace
-    ├── public/
-    │   └── index.html        # Web layout entry point (serves at root URL)
-    ├── src/                  
-    │   ├── database.js       # Web-optimized Supabase pool client
-    │   ├── panel.js          # Unified panel layouts (aligned spy metrics & flags)
-    │   └── footballApi.js    # Sync engine, automated payouts, & DM notifier
+Project-BlueLock/
+├── .gitignore                  # Files for GitHub not to push to the repo
+├── context.md                  # System specifications and absolute source of truth
+├── projectbluelockdatabase.sql # SQL database initialization script for Supabase
+├── bot/                        # Discord Interaction Code Assets (Gateway Client Backup)
+│   ├── .env                    # Local credentials and private keys for the persistent bot
+│   ├── .env.example            # Template outlining required credentials for the persistent bot
+│   ├── index.js                # Continuous background event listener loop for the persistent bot
+│   ├── package-lock.json       # Dependency lockfile tracking exact versions for the persistent bot
+│   ├── package.json            # Gateway execution dependencies
+│   └── src/
+│       ├── database.js         # Persistent bot connection pool and database CRUD helpers
+│       └── footballApi.js      # Persistent bot sports data synchronization parser
+└── web/                        # Full-Stack Website Workspace
+    ├── package-lock.json       # Dependency lockfile tracking exact versions for the web/api folder
+    ├── package.json            # Dependencies & build scripts (no "main" entrypoint)
+    ├── portugal.js             # Custom DM for Portugal winning, with an admin bonus of 100 on top of winnings from bets
+    ├── vercel.json             # Secure environment overrides and cron rules
     ├── api/
-    │   ├── interactions.js   # Discord Webhook command handler (direct-response)
-    │   ├── auth.js           # Handles Discord OAuth2 handshakes and session signatures
-    │   ├── bet.js            # Secure web-based wager handler with wealth-bet limitations
-    │   └── config.js         # Serves public Supabase and Discord credentials to the browser
-    ├── package.json          # Dependencies & build scripts (no "main" entrypoint)
-    └── vercel.json           # Secure environment overrides and cron rules
+    │   ├── interactions.js     # Discord Webhook command handler (direct-response)
+    │   └── cron/
+    │       └── sync.js         # Daily automated sync endpoint to process match and payout calculations
+    ├── scripts/
+    │   ├── history.js          # Admin CLI tool to trigger the interactive, paginated history DM console
+    │   ├── leaderboard.js      # Admin CLI tool to publish a public standings card to the events channel
+    │   └── register-commands.js# Developer utility to register slash command schemas with Discord's API
+    └── src/
+        ├── database.js         # Web-optimized Supabase pool client
+        ├── footballApi.js      # Sync engine, automated payouts, & DM notifier
+        └── panel.js            # Unified panel layouts (aligned spy metrics & flags)
 
 ---
 
@@ -105,6 +117,9 @@ An admin-initialized message string that updates dynamically over time.
 ---
 
 ## 🖥️ Web Dashboard Layout & Full-Stack Capabilities
+⚠️ **Development Status Update:** The Web Dashboard component described below is currently **scrapped/suspended** and disabled in active builds.
+The branch has been deleted and all files for the web dashboard have been removed from the repo however I can still access the files so let me know if and when you need them.
+
 The web front-end matches the feature capabilities of the bot, utilizing a premium Dark-Mode sports analytic style built with Tailwind CSS.
 
 * **Discord OAuth2 Login:** Authenticates users via Discord profile tokens. Grabs and synchronizes real user metadata to the database instantly.
