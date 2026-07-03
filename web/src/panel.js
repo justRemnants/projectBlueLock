@@ -4,7 +4,7 @@
  * Lightweight layout builder returning raw JSON components for serverless execution.
  */
 
-const { getActiveMatches, getSpyMetric, getUserHistory } = require('./database');
+const { getActiveMatches, getSpyMetric, getUserHistory, supabase } = require('./database');
 
 const COLORS = {
   blue: 0x1a6bff,
@@ -497,6 +497,142 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
   return embed;
 }
 
+/**
+ * Builds the interactive, paginated, and sortable global betting history console
+ */
+async function buildAdminHistoryPage(page = 1, sortBy = 'date_desc') {
+  // 1. Query all wagers with joined user and match metadata
+  const { data: bets, error } = await supabase
+    .from('bets')
+    .select(`
+      *,
+      users ( username, display_name ),
+      matches ( home_team, away_team, kickoff_time, status, winner, score )
+    `);
+
+  if (error || !bets) throw new Error('Failed to retrieve history logs.');
+
+  // 2. Perform memory-based sorting/filtering on the results list
+  let sorted = [...bets];
+  if (sortBy === 'date_desc') {
+    sorted.sort((a, b) => new Date(b.matches?.kickoff_time) - new Date(a.matches?.kickoff_time));
+  } else if (sortBy === 'date_asc') {
+    sorted.sort((a, b) => new Date(a.matches?.kickoff_time) - new Date(b.matches?.kickoff_time));
+  } else if (sortBy === 'unsettled') {
+    sorted = sorted.filter(b => !b.settled);
+  } else if (sortBy === 'settled') {
+    sorted = sorted.filter(b => b.settled);
+  }
+
+  const itemsPerPage = 5;
+  const totalPages = Math.max(1, Math.ceil(sorted.length / itemsPerPage));
+  const currentPage = Math.min(Math.max(1, page), totalPages);
+  
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const pageItems = sorted.slice(startIndex, startIndex + itemsPerPage);
+
+  const lines = pageItems.map((b, idx) => {
+    const player = b.users?.display_name || b.users?.username || 'Unknown';
+    const isFree = b.amount_wagered === 0;
+    const wagerStr = isFree ? 'Free Vote' : `${fmt(b.amount_wagered)} 🪙`;
+    
+    const homeFlag = getFlag(b.matches?.home_team);
+    const awayFlag = getFlag(b.matches?.away_team);
+    const dateLabel = new Date(b.matches?.kickoff_time).toLocaleDateString('en-US', {
+      timeZone: 'America/New_York', month: 'short', day: 'numeric'
+    });
+
+    const displayPick = b.team_picked === 'home'
+      ? shortenTeamName(b.matches?.home_team)
+      : b.team_picked === 'away'
+        ? shortenTeamName(b.matches?.away_team)
+        : 'DRAW';
+
+    let statusLabel = '';
+    if (b.settled) {
+      const won = b.team_picked === b.matches?.winner;
+      const isRefund = b.matches?.winner === 'draw' && b.team_picked !== 'draw';
+      statusLabel = isRefund ? '↩️ Refunded' : won ? '✅ Won' : '❌ Lost';
+    } else {
+      const isLive = b.matches?.status === 'LIVE';
+      statusLabel = isLive ? '🔴 LIVE' : '⏳ Pending';
+    }
+
+    return `\`#${startIndex + idx + 1}\` **${player}** • ${dateLabel}\n` +
+           `${homeFlag} **${b.matches?.home_team}** vs **${b.matches?.away_team}** ${awayFlag}\n` +
+           `   Pick: **${displayPick.toUpperCase()}** • Wager: **${wagerStr}** • **${statusLabel}**`;
+  });
+
+  const embed = {
+    color: COLORS.blue,
+    title: '📊  Global Betting Logs  •  Admin Console',
+    description: `Current Filter: \`${sortBy.replace('_', ' ').toUpperCase()}\`\n\n` + (lines.join('\n\n') || '*No wagers match the selected filter.*'),
+    footer: { text: `Page ${currentPage} of ${totalPages}  •  Click buttons below to navigate` },
+    timestamp: new Date().toISOString()
+  };
+
+  // 3. Construct Pagination Row (Buttons)
+  const row1 = {
+    type: 1, // ACTION_ROW
+    components: [
+      {
+        type: 2, // BUTTON
+        style: 2, // SECONDARY
+        label: 'Previous',
+        custom_id: `admin_history_page:${currentPage - 1}:${sortBy}`,
+        disabled: currentPage <= 1,
+        emoji: { name: '⬅️' }
+      },
+      {
+        type: 2, // BUTTON
+        style: 2, // SECONDARY
+        label: 'Next',
+        custom_id: `admin_history_page:${currentPage + 1}:${sortBy}`,
+        disabled: currentPage >= totalPages,
+        emoji: { name: '➡️' }
+      }
+    ]
+  };
+
+  // 4. Construct Sort & Filter Selector Row (Select Menu)
+  const row2 = {
+    type: 1, // ACTION_ROW
+    components: [{
+      type: 3, // STRING_SELECT
+      custom_id: `admin_history_sort:${currentPage}`,
+      placeholder: '⚙️  Sort & Filter logs...',
+      options: [
+        {
+          label: 'Sort by Date (Newest)',
+          value: 'date_desc',
+          emoji: { name: '📅' },
+          default: sortBy === 'date_desc'
+        },
+        {
+          label: 'Sort by Date (Oldest)',
+          value: 'date_asc',
+          emoji: { name: '📅' },
+          default: sortBy === 'date_asc'
+        },
+        {
+          label: 'Show Unsettled Only',
+          value: 'unsettled',
+          emoji: { name: '⏳' },
+          default: sortBy === 'unsettled'
+        },
+        {
+          label: 'Show Settled Only',
+          value: 'settled',
+          emoji: { name: '✅' },
+          default: sortBy === 'settled'
+        }
+      ]
+    }]
+  };
+
+  return { embeds: [embed], components: [row1, row2] };
+}
+
 module.exports = {
   COLORS,
   fmt,
@@ -504,5 +640,6 @@ module.exports = {
   buildMasterPanel,
   buildMatchDetail,
   buildBetConfirmEmbed,
-  buildProfileEmbed
+  buildProfileEmbed,
+  buildAdminHistoryPage
 };

@@ -2,7 +2,6 @@
  * web/api/interactions.js
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
- * Refactored to use direct responses, ensuring 100% serverless process stability.
  */
 
 require('dotenv').config();
@@ -17,7 +16,7 @@ const {
 const { syncFixtures, syncMockFixtures, checkApiStatus } = require('../src/footballApi');
 const {
   COLORS, fmt, modal,
-  buildMasterPanel, buildMatchDetail, buildBetConfirmEmbed, buildProfileEmbed
+  buildMasterPanel, buildMatchDetail, buildBetConfirmEmbed, buildProfileEmbed, buildAdminHistoryPage
 } = require('../src/panel');
 
 const PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY;
@@ -234,11 +233,70 @@ async function handleCommand(interaction, res) {
       return sendJson(res, errorEmbed(err.message));
     }
   }
+
+  if (name === 'post-leaderboard') {
+    try {
+      const embed = await buildLeaderboardEmbed();
+      return sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          embeds: [embed]
+        }
+      });
+    } catch (err) {
+      return sendJson(res, errorEmbed(err.message));
+    }
+  }
 }
 
 async function handleComponent(interaction, res) {
   const customId = interaction.data.custom_id;
   const user = interaction.member?.user || interaction.user;
+
+  // 1. Handle Admin History Pagination (Buttons)
+  if (customId.startsWith('admin_history_page:')) {
+    const [, pageStr, sortBy] = customId.split(':');
+    const pageNum = parseInt(pageStr, 10);
+
+    // Instantly acknowledge the button click (resetting state on screen)
+    sendJson(res, { type: R.DEFERRED_UPDATE });
+
+    try {
+      const panel = await buildAdminHistoryPage(pageNum, sortBy);
+
+      // Edit the DM message containing the panel
+      await axios.patch(
+        `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}/messages/@original`,
+        panel,
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    } catch (err) {
+      console.error('[Admin History Pagination Error]:', err.message);
+    }
+    return;
+  }
+
+  // 2. Handle Admin History Sorting (Dropdown Select Menu)
+  if (customId.startsWith('admin_history_sort:')) {
+    const [, pageStr] = customId.split(':');
+    const pageNum = parseInt(pageStr, 10);
+    const sortBy = interaction.data.values[0];
+
+    sendJson(res, { type: R.DEFERRED_UPDATE });
+
+    try {
+      const panel = await buildAdminHistoryPage(pageNum, sortBy);
+
+      await axios.patch(
+        `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}/messages/@original`,
+        panel,
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    } catch (err) {
+      console.error('[Admin History Sort Error]:', err.message);
+    }
+    return;
+  }
 
   if (customId === 'select_match') {
     const fixtureId = interaction.data.values[0];
@@ -246,31 +304,45 @@ async function handleComponent(interaction, res) {
       return sendJson(res, { type: R.DEFERRED_UPDATE });
     }
 
+    sendJson(res, { type: R.DEFERRED_UPDATE });
+
     try {
       const dbUser = await getOrCreateUser(user);
       const matches = await getActiveMatches();
       const match = matches.find(m => m.fixture_id === fixtureId);
-      if (!match) return sendJson(res, errorEmbed('Match not found in the database.'));
+      
+      if (!match) {
+        await axios.post(`https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`, {
+          ...errorEmbed('Match not found in the database.'),
+          flags: FLAGS.EPHEMERAL
+        });
+        return;
+      }
 
       const kickedOff = new Date() >= new Date(match.kickoff_time);
       if (kickedOff || match.status !== 'NS') {
-        return sendJson(res, errorEmbed('This match has already kicked off! Predictions are locked.'));
+        await axios.post(`https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`, {
+          ...errorEmbed('This match has already kicked off! Predictions are locked.'),
+          flags: FLAGS.EPHEMERAL
+        });
+        return;
       }
 
       const detail = await buildMatchDetail(match, dbUser);
       
-      // Respond DIRECTLY in the HTTP payload to guarantee stable execution
-      return sendJson(res, {
-        type: R.MESSAGE,
-        data: {
-          flags: FLAGS.EPHEMERAL,
+      await axios.post(
+        `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`,
+        {
           embeds: detail.embeds,
-          components: detail.components
-        }
-      });
+          components: detail.components,
+          flags: FLAGS.EPHEMERAL
+        },
+        { headers: { 'Content-Type': 'application/json' } }
+      );
     } catch (err) {
-      return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
+      console.error('Async select_match error:', err.response?.data || err.message);
     }
+    return;
   }
 
   if (customId.startsWith('select_prediction:')) {
