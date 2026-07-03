@@ -2,11 +2,6 @@
  * web/src/panel.js
  * 
  * Lightweight layout builder returning raw JSON components for serverless execution.
- * Configured with FIFA Timezone (EST/EDT - America/New_York), strike-through text for 
- * occurred matches, team vs separators set to ⚔️, and dynamic 30% wealth bet limitations.
- * Features readable team names and country flags in the Live Spy Metrics and Match lists.
- * Utilizes a monospaced format helper to ensure aligned progress bars and stats.
- * Refactored for Knockout Stages: "Draw" has been removed from all user-facing selections and metrics.
  */
 
 const { getActiveMatches, getSpyMetric, getUserHistory, supabase } = require('./database');
@@ -19,7 +14,6 @@ const COLORS = {
   purple: 0x9b59b6
 };
 
-// Map country names to flag emojis for clean layout presentation
 const COUNTRY_FLAGS = {
   "Argentina": "🇦🇷", "Australia": "🇦🇺", "Belgium": "🇧🇪", "Brazil": "🇧🇷",
   "Canada": "🇨🇦", "Cameroon": "🇨🇲", "Costa Rica": "🇨🇷", "Croatia": "🇭🇷",
@@ -36,7 +30,7 @@ const COUNTRY_FLAGS = {
   "Republic of the Congo": "🇨🇬", "Congo": "🇨🇬",
   "Austria": "🇦🇹", "Ukraine": "🇺🇦", "Turkey": "🇹🇷", "Czechia": "🇨🇿", 
   "Czech Republic": "🇨🇿", "Slovakia": "🇸🇰", "Slovenia": "🇸🇮", "Georgia": "🇬🇪", 
-  "Albania": "🇦🇱", "Hungary": "🇭🇺", "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿", "Romania": "🇷🇴"
+  "Albania": "🇦🇱", "Hungary": "🇭🇺", "Scotland": "🏴"
 };
 
 function getFlag(teamName) {
@@ -97,37 +91,30 @@ function getFIFADayLabel(kickoffStr) {
  */
 function getWorldCupDay(kickoffStr) {
   const msInDay = 86400000;
-  
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/New_York',
     year: 'numeric', month: '2-digit', day: '2-digit'
   });
-
-  const startStr = "2026-06-11"; // Opening day of World Cup 2026
+  const startStr = "2026-06-11";
   const kickoffStrNY = formatter.format(new Date(kickoffStr));
-
   const startParsed = new Date(startStr);
   const kickoffParsed = new Date(kickoffStrNY);
-
-  const diffTime = Math.abs(kickoffParsed - startParsed);
-  const diffDays = Math.ceil(diffTime / msInDay) + 1; // June 11 is Day 1
-
-  return diffDays;
+  return Math.ceil(Math.abs(kickoffParsed - startParsed) / msInDay) + 1;
 }
 
 function modal({ customId, title, inputs }) {
   return {
-    type: 9, // MODAL response type
+    type: 9,
     data: {
       custom_id: customId,
       title: title,
       components: inputs.map(input => ({
-        type: 1, // ACTION_ROW
+        type: 1,
         components: [{
-          type: 4, // TEXT_INPUT
+          type: 4,
           custom_id: input.customId,
           label: input.label,
-          style: 1, // SHORT
+          style: 1,
           placeholder: input.placeholder,
           min_length: input.minLength,
           max_length: input.maxLength,
@@ -140,8 +127,6 @@ function modal({ customId, title, inputs }) {
 
 async function buildMasterPanel() {
   const matches = await getActiveMatches();
-
-  // Find matches scheduled for Today or Tomorrow in the FIFA timezone (America/New_York)
   const upcomingMatches = matches.filter(m => {
     const label = getFIFADayLabel(m.kickoff_time);
     return label === 'Today' || label === 'Tomorrow';
@@ -185,13 +170,11 @@ async function buildMasterPanel() {
         const spy = await getSpyMetric(m.fixture_id);
         const total = spy.totalVotes || 0;
 
-        // Exclude Draw calculations to cleanly split 100% between Home and Away in knockouts
         const homeShare = total > 0 ? Math.round((spy.home.votes / total) * 100) : 50;
         const awayShare = total > 0 ? (100 - homeShare) : 50;
 
         const unixTs = Math.floor(new Date(m.kickoff_time).getTime() / 1000);
 
-        // Check if the kickoff time has passed or match is finished
         const kickedOff = new Date() >= new Date(m.kickoff_time);
         const isFinished = m.status === 'FT';
         const isLive = m.status === 'LIVE';
@@ -204,7 +187,6 @@ async function buildMasterPanel() {
         const homeFlag = getFlag(m.home_team);
         const awayFlag = getFlag(m.away_team);
 
-        // Match headers formatted with flags directly next to each nation
         const matchHeader = `${homeFlag} **${m.home_team}**  ⚔️  **${m.away_team}** ${awayFlag}${statusSuffix}`;
         const matchDisplay = (kickedOff || isFinished) ? `~~${matchHeader}~~` : matchHeader;
 
@@ -230,7 +212,6 @@ async function buildMasterPanel() {
     }
   }
 
-  // Filter out matches that have already kicked off/occurred so users can't select them
   const openMatches = upcomingMatches.filter(m => {
     const kickedOff = new Date() >= new Date(m.kickoff_time);
     return !kickedOff && m.status === 'NS';
@@ -259,9 +240,9 @@ async function buildMasterPanel() {
   }
 
   const row1 = {
-    type: 1, // ACTION_ROW
+    type: 1,
     components: [{
-      type: 3, // STRING_SELECT
+      type: 3,
       custom_id: 'select_match',
       placeholder: '🔮 Pick an upcoming match to bet on...',
       options: options,
@@ -270,25 +251,25 @@ async function buildMasterPanel() {
   };
 
   const row2 = {
-    type: 1, // ACTION_ROW
+    type: 1,
     components: [
       {
-        type: 2, // BUTTON
-        style: 2, // SECONDARY
+        type: 2,
+        style: 2,
         label: 'My Predictions',
         custom_id: 'view_my_history',
         emoji: { name: '📊' }
       },
       {
-        type: 2, // BUTTON
-        style: 2, // SECONDARY
+        type: 2,
+        style: 2,
         label: 'Leaderboard',
         custom_id: 'view_leaderboard',
         emoji: { name: '🏆' }
       },
       {
-        type: 2, // BUTTON
-        style: 2, // SECONDARY
+        type: 2,
+        style: 2,
         label: 'How to Play',
         custom_id: 'show_rules',
         emoji: { name: '📖' }
@@ -308,7 +289,6 @@ async function buildMatchDetail(match, dbUser) {
 
   const unixTs = Math.floor(new Date(match.kickoff_time).getTime() / 1000);
 
-  // Dynamic maximum bet calculations (30% of Total Wealth or 300, whichever is lower)
   const history = await getUserHistory(dbUser.discord_id);
   const activeBets = history.filter(b => !b.settled);
   const totalActiveWagered = activeBets.reduce((sum, b) => sum + b.amount_wagered, 0);
@@ -351,7 +331,7 @@ async function buildMatchDetail(match, dbUser) {
   };
 
   const row = {
-    type: 1, // ACTION_ROW
+    type: 1,
     components: [{
       type: 3,
       custom_id: `select_prediction:${match.fixture_id}`,
@@ -506,20 +486,26 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
  * Builds the interactive, paginated, and sortable global betting history console
  */
 async function buildAdminHistoryPage(page = 1, sortBy = 'date_desc') {
-  // 1. Query all wagers with joined user and match metadata (Explicit Foreign Key joins utilized)
   const { data: bets, error } = await supabase
     .from('bets')
     .select(`
       *,
       users!user_id ( username, display_name ),
       matches!fixture_id ( home_team, away_team, kickoff_time, status, winner )
-    `); // Fixed: Removed non-existent 'score' column from SELECT query to prevent 400 errors
+    `);
 
   if (error || !bets) throw new Error('Failed to retrieve history logs.');
 
-  // 2. Perform memory-based sorting/filtering on the results list
   let sorted = [...bets];
-  if (sortBy === 'date_desc') {
+  
+  // Implemented alphabetical player grouping (user_asc)
+  if (sortBy === 'user_asc') {
+    sorted.sort((a, b) => {
+      const nameA = (a.users?.display_name || a.users?.username || '').toLowerCase();
+      const nameB = (b.users?.display_name || b.users?.username || '').toLowerCase();
+      return nameA.localeCompare(nameB);
+    });
+  } else if (sortBy === 'date_desc') {
     sorted.sort((a, b) => new Date(b.matches?.kickoff_time) - new Date(a.matches?.kickoff_time));
   } else if (sortBy === 'date_asc') {
     sorted.sort((a, b) => new Date(a.matches?.kickoff_time) - new Date(b.matches?.kickoff_time));
@@ -599,7 +585,7 @@ async function buildAdminHistoryPage(page = 1, sortBy = 'date_desc') {
     ]
   };
 
-  // 4. Construct Sort & Filter Selector Row (Select Menu)
+  // 4. Construct Sort & Filter Selector Row (Select Menu with alphabetical Player sorting integrated)
   const row2 = {
     type: 1, // ACTION_ROW
     components: [{
@@ -618,6 +604,12 @@ async function buildAdminHistoryPage(page = 1, sortBy = 'date_desc') {
           value: 'date_asc',
           emoji: { name: '📅' },
           default: sortBy === 'date_asc'
+        },
+        {
+          label: 'Group by Player (A-Z)',
+          value: 'user_asc',
+          emoji: { name: '👤' },
+          default: sortBy === 'user_asc'
         },
         {
           label: 'Show Unsettled Only',
