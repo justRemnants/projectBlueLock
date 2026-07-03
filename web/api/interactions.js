@@ -3,6 +3,7 @@
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
  * Refactored to use direct responses, ensuring 100% serverless process stability.
+ * Configured with strict 8-second request timeouts and sequential panel refresh ordering.
  */
 
 require('dotenv').config();
@@ -44,7 +45,10 @@ async function editChannelMessage(channelId, messageId, data) {
   await axios.patch(
     `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
     data,
-    { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+    { 
+      headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' },
+      timeout: 8000 // Prevents hanging on panel message updates
+    }
   );
 }
 
@@ -108,7 +112,10 @@ async function handleCommand(interaction, res) {
       const response = await axios.post(
         `https://discord.com/api/v10/channels/${channelId}/messages`,
         panelData,
-        { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+        { 
+          headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' },
+          timeout: 8000
+        }
       );
 
       await savePanelMessage(channelId, response.data.id);
@@ -156,9 +163,15 @@ async function handleCommand(interaction, res) {
     const useMock = interaction.data.options?.find(o => o.name === 'mock')?.value ?? false;
     try {
       const result = useMock ? await syncMockFixtures() : await syncFixtures();
+      
+      // 1. Await panel refresh BEFORE sending the success response to avoid Vercel process freezing
+      if (result.success) {
+        await refreshPanel();
+      }
+
       const color = result.success ? COLORS.green : COLORS.red;
 
-      sendJson(res, {
+      return sendJson(res, {
         type: R.MESSAGE,
         data: {
           flags: FLAGS.EPHEMERAL,
@@ -170,14 +183,9 @@ async function handleCommand(interaction, res) {
           }]
         }
       });
-
-      if (result.success) {
-        await refreshPanel();
-      }
     } catch (err) {
       return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
     }
-    return;
   }
 
   if (name === 'check-api') {
@@ -455,6 +463,9 @@ async function handleModal(interaction, res) {
       const matches = await getActiveMatches();
       const match = matches.find(m => m.fixture_id === fixtureId);
 
+      // Await panel refresh BEFORE sending the confirmation message and closing the connection
+      await refreshPanel();
+
       sendJson(res, {
         type: R.MESSAGE,
         data: {
@@ -469,8 +480,6 @@ async function handleModal(interaction, res) {
           })]
         }
       });
-
-      await refreshPanel();
     } catch (err) {
       return sendJson(res, errorEmbed(`\`\`\`\n${err.message}\n\`\`\``));
     }

@@ -2,9 +2,8 @@
  * src/footballApi.js
  *
  * Rate-limit aware sync service configured for Football-Data.org v4 API.
- * Tracks match transitions to automatically process payouts (treating Free Votes as virtual +5 contributions)
- * and delivers player DM summaries.
- * Features a fail-safe sweeper to capture and process historical or backlogged completed wagers.
+ * Tracks match transitions to automatically process payouts and deliver player DM summaries.
+ * Features a fail-safe sweeper and strict 8-second request timeout protections.
  */
 
 require('dotenv').config();
@@ -25,7 +24,7 @@ function fmt(n) {
 }
 
 /**
- * Throttling-aware Axios GET Request wrapper for Football-Data.org
+ * Throttling-aware Axios GET Request wrapper for Football-Data.org with an 8-second timeout.
  */
 async function getWithThrottling(url) {
   if (!API_KEY) {
@@ -34,7 +33,8 @@ async function getWithThrottling(url) {
 
   try {
     const response = await axios.get(url, {
-      headers: { 'X-Auth-Token': API_KEY }
+      headers: { 'X-Auth-Token': API_KEY },
+      timeout: 8000 // 8-second connection timeout guardrail
     });
 
     const headers = response.headers;
@@ -54,37 +54,40 @@ async function getWithThrottling(url) {
 
     return response;
   } catch (err) {
-    if (err.response?.status === 429) {
-      const resetSeconds = parseInt(err.response.headers['x-requestcounter-reset'] || '60', 10);
-      throw new Error(`Rate Limit Exceeded (HTTP 429). Please wait ${resetSeconds} seconds before requesting again.`);
-    }
-    
     const status = err.response?.status;
     const detail = err.response?.data?.message || err.message;
-    throw new Error(`API Request failed (HTTP ${status}): ${detail}`);
+    throw new Error(`API Request failed (HTTP ${status || 'timeout'}): ${detail}`);
   }
 }
 
 /**
- * Securely delivers a direct message (DM) embed to a specific user via Discord REST API.
+ * Securely delivers a direct message (DM) embed with an 8-second timeout.
  */
 async function sendDM(userId, embed) {
   try {
+    // Step A: Create a DM channel with the recipient
     const channelRes = await axios.post(
       'https://discord.com/api/v10/users/@me/channels',
       { recipient_id: userId },
-      { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+      { 
+        headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' },
+        timeout: 8000 // Prevents hanging on closed DM configurations
+      }
     );
     const channelId = channelRes.data.id;
 
+    // Step B: Post the DM embed
     await axios.post(
       `https://discord.com/api/v10/channels/${channelId}/messages`,
       { embeds: [embed] },
-      { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+      { 
+        headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' },
+        timeout: 8000
+      }
     );
     console.log(`[Settlement DM] Successfully delivered summary to user ${userId}`);
   } catch (err) {
-    console.warn(`[Settlement DM Warning] Could not deliver DM to user ${userId} (They may have closed DMs):`, err.response?.data || err.message);
+    console.warn(`[Settlement DM Warning] Could not deliver DM to user ${userId}:`, err.response?.data || err.message);
   }
 }
 
@@ -149,6 +152,7 @@ async function settleMatch(fixtureId, apiMatch) {
     let isRefund = false;
     let isWinner = false;
 
+    // Proportional Base Reward (20% of wager, with +5 tokens backup safety)
     const baseReward = b.amount_wagered === 0 ? 5 : Math.round(b.amount_wagered * 0.20);
 
     if (winner === 'draw') {
@@ -168,8 +172,6 @@ async function settleMatch(fixtureId, apiMatch) {
           payout = Math.round((boostedPool / winningTokens) * b.amount_wagered) + baseReward;
         }
       } else if (b.team_picked === 'draw') {
-        // 🚨 KNOCKOUT STAGE PROTECTIVE FALLBACK:
-        // Automatically refund draw predictions upon match completion
         isRefund = true;
         payout = b.amount_wagered;
       } else {

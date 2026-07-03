@@ -492,7 +492,7 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
  * Builds the interactive, paginated, and sortable global betting history console
  */
 async function buildAdminHistoryPage(page = 1, sortBy = 'date_asc') {
-  // 1. Query all wagers with standard, working joins (no custom prefixes, no 'score' column)
+  // 1. Reverted to standard joins to prevent PostgREST 400 Bad Request constraint errors
   const { data: bets, error } = await supabase
     .from('bets')
     .select(`
@@ -505,7 +505,6 @@ async function buildAdminHistoryPage(page = 1, sortBy = 'date_asc') {
 
   let sorted = [...bets];
   
-  // Handlers configured strictly for chronological sorting (Match Date) and Player Grouping (A-Z)
   if (sortBy === 'user_asc') {
     sorted.sort((a, b) => {
       const nameA = (a.users?.display_name || a.users?.username || '').toLowerCase();
@@ -592,7 +591,7 @@ async function buildAdminHistoryPage(page = 1, sortBy = 'date_asc') {
     ]
   };
 
-  // 4. Construct Sort & Filter Selector Row (Select Menu with chronological Match Date and A-Z Player sorting)
+  // 4. Construct Sort & Filter Selector Row (Select Menu configured with chronological Match Date and A-Z Player sorting)
   const row2 = {
     type: 1, // ACTION_ROW
     components: [{
