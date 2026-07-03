@@ -13,7 +13,7 @@ const BOT_TOKEN = process.env.DISCORD_TOKEN;
 // ───────────────────────────────────────────────────────────────────────────
 // CONFIGURATION: Put your personal Discord User ID here!
 // ───────────────────────────────────────────────────────────────────────────
-const ADMIN_DISCORD_ID = "YOUR_PERSONAL_DISCORD_USER_ID_HERE"; // Right-click your name in Discord -> Copy User ID
+const ADMIN_DISCORD_ID = "1081816627575787582"; // Right-click your name in Discord -> Copy User ID
 
 async function triggerHistoryDM() {
   if (!BOT_TOKEN) {
