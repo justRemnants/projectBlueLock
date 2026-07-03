@@ -2,6 +2,11 @@
  * web/src/panel.js
  * 
  * Lightweight layout builder returning raw JSON components for serverless execution.
+ * Configured with FIFA Timezone (EST/EDT - America/New_York), strike-through text for 
+ * occurred matches, team vs separators set to ⚔️, and dynamic 30% wealth bet limitations.
+ * Features readable team names and country flags in the Live Spy Metrics and Match lists.
+ * Utilizes a monospaced format helper to ensure aligned progress bars and stats.
+ * Refactored for Knockout Stages: "Draw" has been removed from all user-facing selections and metrics.
  */
 
 const { getActiveMatches, getSpyMetric, getUserHistory, supabase } = require('./database');
@@ -501,14 +506,14 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
  * Builds the interactive, paginated, and sortable global betting history console
  */
 async function buildAdminHistoryPage(page = 1, sortBy = 'date_desc') {
-  // 1. Query all wagers with joined user and match metadata
+  // 1. Query all wagers with joined user and match metadata (Explicit Foreign Key joins utilized)
   const { data: bets, error } = await supabase
     .from('bets')
     .select(`
       *,
-      users ( username, display_name ),
-      matches ( home_team, away_team, kickoff_time, status, winner, score )
-    `);
+      users!user_id ( username, display_name ),
+      matches!fixture_id ( home_team, away_team, kickoff_time, status, winner )
+    `); // Fixed: Removed non-existent 'score' column from SELECT query to prevent 400 errors
 
   if (error || !bets) throw new Error('Failed to retrieve history logs.');
 
