@@ -145,7 +145,7 @@ async function handleCommand(interaction, res) {
           "1. **Channel Visibility:** Ensure the bot's role has **View Channel** allowed.\n" +
           "2. **Scopes:** Ensure you authorized the bot with both `bot` and `applications.commands` checked.";
       } else {
-        errorDetails = `Failed to build the panel: \`\`\`\n${discordMsg || err.message}\n\`\`\``;
+        errorDetails = `Failed to build the panel: \`\`\`\n${discordMsg || err.message}\n\`\`\`;`;
       }
 
       return sendJson(res, errorEmbed(errorDetails));

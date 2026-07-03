@@ -2,6 +2,11 @@
  * web/src/panel.js
  * 
  * Lightweight layout builder returning raw JSON components for serverless execution.
+ * Configured with FIFA Timezone (EST/EDT - America/New_York), strike-through text for 
+ * occurred matches, team vs separators set to ⚔️, and dynamic 30% wealth bet limitations.
+ * Features readable team names and country flags in the Live Spy Metrics and Match lists.
+ * Utilizes a monospaced format helper to ensure aligned progress bars and stats.
+ * Refactored for Knockout Stages: "Draw" has been removed from all user-facing selections and metrics.
  */
 
 const { getActiveMatches, getSpyMetric, getUserHistory, supabase } = require('./database');
@@ -14,6 +19,7 @@ const COLORS = {
   purple: 0x9b59b6
 };
 
+// Map country names to flag emojis for clean layout presentation
 const COUNTRY_FLAGS = {
   "Argentina": "🇦🇷", "Australia": "🇦🇺", "Belgium": "🇧🇪", "Brazil": "🇧🇷",
   "Canada": "🇨🇦", "Cameroon": "🇨🇲", "Costa Rica": "🇨🇷", "Croatia": "🇭🇷",
@@ -30,7 +36,7 @@ const COUNTRY_FLAGS = {
   "Republic of the Congo": "🇨🇬", "Congo": "🇨🇬",
   "Austria": "🇦🇹", "Ukraine": "🇺🇦", "Turkey": "🇹🇷", "Czechia": "🇨🇿", 
   "Czech Republic": "🇨🇿", "Slovakia": "🇸🇰", "Slovenia": "🇸🇮", "Georgia": "🇬🇪", 
-  "Albania": "🇦🇱", "Hungary": "🇭🇺", "Scotland": "🏴"
+  "Albania": "🇦🇱", "Hungary": "🇭🇺", "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿", "Romania": "🇷🇴"
 };
 
 function getFlag(teamName) {
@@ -485,20 +491,21 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
 /**
  * Builds the interactive, paginated, and sortable global betting history console
  */
-async function buildAdminHistoryPage(page = 1, sortBy = 'date_desc') {
+async function buildAdminHistoryPage(page = 1, sortBy = 'date_asc') {
+  // 1. Query all wagers with standard, working joins (no custom prefixes, no 'score' column)
   const { data: bets, error } = await supabase
     .from('bets')
     .select(`
       *,
-      users!user_id ( username, display_name ),
-      matches!fixture_id ( home_team, away_team, kickoff_time, status, winner )
+      users ( username, display_name ),
+      matches ( home_team, away_team, kickoff_time, status, winner )
     `);
 
   if (error || !bets) throw new Error('Failed to retrieve history logs.');
 
   let sorted = [...bets];
   
-  // Implemented alphabetical player grouping (user_asc)
+  // Handlers configured strictly for chronological sorting (Match Date) and Player Grouping (A-Z)
   if (sortBy === 'user_asc') {
     sorted.sort((a, b) => {
       const nameA = (a.users?.display_name || a.users?.username || '').toLowerCase();
@@ -585,7 +592,7 @@ async function buildAdminHistoryPage(page = 1, sortBy = 'date_desc') {
     ]
   };
 
-  // 4. Construct Sort & Filter Selector Row (Select Menu with alphabetical Player sorting integrated)
+  // 4. Construct Sort & Filter Selector Row (Select Menu with chronological Match Date and A-Z Player sorting)
   const row2 = {
     type: 1, // ACTION_ROW
     components: [{
@@ -594,16 +601,16 @@ async function buildAdminHistoryPage(page = 1, sortBy = 'date_desc') {
       placeholder: '⚙️  Sort & Filter logs...',
       options: [
         {
-          label: 'Sort by Date (Newest)',
-          value: 'date_desc',
-          emoji: { name: '📅' },
-          default: sortBy === 'date_desc'
-        },
-        {
-          label: 'Sort by Date (Oldest)',
+          label: 'Sort by Match Date (Oldest to Newest)',
           value: 'date_asc',
           emoji: { name: '📅' },
           default: sortBy === 'date_asc'
+        },
+        {
+          label: 'Sort by Match Date (Newest to Oldest)',
+          value: 'date_desc',
+          emoji: { name: '📅' },
+          default: sortBy === 'date_desc'
         },
         {
           label: 'Group by Player (A-Z)',
