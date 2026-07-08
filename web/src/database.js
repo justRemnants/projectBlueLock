@@ -2,6 +2,7 @@
  * web/src/database.js
  *
  * Database helpers optimized for JSON interaction payloads received via webhook.
+ * Extended with full Support for Factions, Streaks, Golden Tickets, and Cheats.
  */
 
 require('dotenv').config();
@@ -18,6 +19,21 @@ const supabase = createClient(
 function avatarUrl(userId, hash) {
   if (!hash) return null;
   return `https://cdn.discordapp.com/avatars/${userId}/${hash}.png?size=256`;
+}
+
+async function getConfigValue(key) {
+  const { data, error } = await supabase
+    .from('system_config')
+    .select('value')
+    .eq('key', key)
+    .single();
+  return data ? data.value : null;
+}
+
+async function setConfigValue(key, value) {
+  await supabase
+    .from('system_config')
+    .upsert({ key, value }, { onConflict: 'key' });
 }
 
 async function getOrCreateUser(user) {
@@ -89,7 +105,6 @@ async function getSpyMetric(fixtureId) {
   };
   bets.forEach(b => {
     if (d[b.team_picked]) {
-      // Free votes virtually add 5 tokens to the statistical display pool
       const tokenValue = b.amount_wagered === 0 ? 5 : b.amount_wagered;
       d[b.team_picked].tokens += tokenValue;
       d[b.team_picked].votes += 1;
@@ -115,12 +130,10 @@ async function calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, 
     return { estimated: 5, multiplier: 1.0, isFreeVote: true };
   }
 
-  // Start pool calculations with current player's wager
   let totalPool = amountWagered;
   let winningTokens = amountWagered;
 
   otherBets.forEach(b => {
-    // Treat other players' Free Votes as a virtual +5 token contribution
     const virtualWager = b.amount_wagered === 0 ? 5 : b.amount_wagered;
     totalPool += virtualWager;
     if (b.team_picked === teamPicked) {
@@ -137,7 +150,6 @@ async function calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, 
 
   const boostedPool = totalPool * multiplier;
   
-  // Dynamic base reward: 20% of the amount wagered
   const baseReward = Math.round(amountWagered * 0.20);
 
   const estimated = winningTokens > 0 
@@ -213,8 +225,43 @@ async function getPanelMessage() {
   };
 }
 
+/**
+ * Automatically calculates win streaks, protecting the streak once per stage if the Oracle shield is toggled ON.
+ */
+async function getUserStreak(userId, history = null) {
+  if (!history) history = await getUserHistory(userId);
+  const settledBets = history.filter(b => b.settled);
+  settledBets.sort((a, b) => new Date(a.matches?.kickoff_time) - new Date(b.matches?.kickoff_time));
+
+  let streak = 0;
+  let shieldUsedInStage = false;
+
+  const userClass = await getConfigValue(`class:${userId}`);
+  const isOracle = userClass === 'oracle';
+  const shieldState = await getConfigValue(`oracle_shield:${userId}`) || 'off';
+
+  for (const b of settledBets) {
+    const won = b.team_picked === b.matches?.winner;
+    const isRefund = b.matches?.winner === 'draw' && b.team_picked !== 'draw';
+
+    if (won) {
+      streak++;
+    } else if (isRefund) {
+      // Refund leaves streak unaltered
+    } else {
+      if (isOracle && shieldState === 'on' && !shieldUsedInStage) {
+        shieldUsedInStage = true; // Protects streak once
+      } else {
+        streak = 0;
+      }
+    }
+  }
+  return streak;
+}
+
 module.exports = {
   supabase, getOrCreateUser, getActiveMatches, getBetsForFixture,
   getSpyMetric, calculateEstimatedEarnings, placeBet,
-  getUserHistory, savePanelMessage, getPanelMessage
+  getUserHistory, savePanelMessage, getPanelMessage,
+  getConfigValue, setConfigValue, getUserStreak
 };

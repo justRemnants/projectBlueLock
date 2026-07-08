@@ -9,7 +9,7 @@
  * Refactored for Knockout Stages: "Draw" has been removed from all user-facing selections and metrics.
  */
 
-const { getActiveMatches, getSpyMetric, getUserHistory, supabase } = require('./database');
+const { getActiveMatches, getSpyMetric, getUserHistory, supabase, getConfigValue, getUserStreak } = require('./database');
 
 const COLORS = {
   blue: 0x1a6bff,
@@ -19,7 +19,6 @@ const COLORS = {
   purple: 0x9b59b6
 };
 
-// Map country names to flag emojis for clean layout presentation
 const COUNTRY_FLAGS = {
   "Argentina": "🇦🇷", "Australia": "🇦🇺", "Belgium": "🇧🇪", "Brazil": "🇧🇷",
   "Canada": "🇨🇦", "Cameroon": "🇨🇲", "Costa Rica": "🇨🇷", "Croatia": "🇭🇷",
@@ -53,14 +52,10 @@ function progressBar(percent, length = 6) {
   return '█'.repeat(filled) + '░'.repeat(empty);
 }
 
-/**
- * Format aligned spy metrics by padding text inside the code block.
- * Shortens names and keeps progress bar compact to avoid mobile client clipping.
- */
 function formatSpyLine(flag, label, percent, tokens, barLength = 6) {
   const shortName = shortenTeamName(label);
   const bar = progressBar(percent, barLength);
-  const nameStr = shortName.padEnd(11, ' '); // Align names to 11 character width
+  const nameStr = shortName.padEnd(11, ' ');
   const percentStr = String(percent).padStart(3) + '%';
   const tokenStr = fmt(tokens) + '🪙';
   
@@ -83,18 +78,18 @@ function getFIFADayLabel(kickoffStr) {
     timeZone: 'America/New_York',
     year: 'numeric', month: '2-digit', day: '2-digit'
   });
-  const nowLabel = formatter.format(new Date());
-  const tomorrowLabel = formatter.format(new Date(Date.now() + 86400000));
+  const now = new Date();
+  const nowLabel = formatter.format(now);
+  const tomorrowLabel = formatter.format(new Date(now.getTime() + 86400000));
+  const nextDayLabel = formatter.format(new Date(now.getTime() + 2 * 86400000));
   const kickoffLabel = formatter.format(new Date(kickoffStr));
 
   if (kickoffLabel === nowLabel) return 'Today';
   if (kickoffLabel === tomorrowLabel) return 'Tomorrow';
+  if (kickoffLabel === nextDayLabel) return 'In 2 Days';
   return null;
 }
 
-/**
- * Calculates the Day of the World Cup (World Cup 2026 starts on June 11, 2026)
- */
 function getWorldCupDay(kickoffStr) {
   const msInDay = 86400000;
   const formatter = new Intl.DateTimeFormat('en-CA', {
@@ -135,7 +130,7 @@ async function buildMasterPanel() {
   const matches = await getActiveMatches();
   const upcomingMatches = matches.filter(m => {
     const label = getFIFADayLabel(m.kickoff_time);
-    return label === 'Today' || label === 'Tomorrow';
+    return label === 'Today' || label === 'Tomorrow' || label === 'In 2 Days';
   });
 
   const now = new Date();
@@ -156,10 +151,10 @@ async function buildMasterPanel() {
   if (upcomingMatches.length === 0) {
     embed.fields.push({
       name: '⚽  Upcoming Matches',
-      value: "```\nNo matches scheduled for Today or Tomorrow in USA East Time.\nRun /sync-matches to refresh the list.\n```"
+      value: "```\nNo matches scheduled for the next 72 hours in USA East Time.\nRun /sync-matches to refresh the list.\n```"
     });
   } else {
-    const groups = { Today: [], Tomorrow: [] };
+    const groups = { Today: [], Tomorrow: [], 'In 2 Days': [] };
     upcomingMatches.forEach(m => {
       const label = getFIFADayLabel(m.kickoff_time);
       if (groups[label]) groups[label].push(m);
@@ -304,6 +299,16 @@ async function buildMatchDetail(match, dbUser) {
   const homeFlag = getFlag(match.home_team);
   const awayFlag = getFlag(match.away_team);
 
+  // Class & Ticket Indicators
+  const userClass = await getConfigValue(`class:${dbUser.discord_id}`) || 'None Selected';
+  const rawTicketUsedCount = await supabase
+    .from('system_config')
+    .select('key')
+    .like('key', `ticket_used:${dbUser.discord_id}:%`);
+  const ticketUsedCount = rawTicketUsedCount.data?.length || 0;
+  const maxTicketsAllowed = userClass === 'renegade' ? 2 : 1;
+  const ticketsLeft = Math.max(0, maxTicketsAllowed - ticketUsedCount);
+
   const embed = {
     color: COLORS.blue,
     title: `${homeFlag}  ${match.home_team}  ⚔️  ${match.away_team}  ${awayFlag}`,
@@ -317,6 +322,11 @@ async function buildMatchDetail(match, dbUser) {
       {
         name: '🛡️ Max Bet Allowed',
         value: `\`${fmt(maxBet)} tokens\`\n*(30% of total wealth)*`,
+        inline: true
+      },
+      {
+        name: '🎟️ Golden Tickets',
+        value: `\`${ticketsLeft} remaining\`\n*(${userClass.toUpperCase()} Class)*`,
         inline: true
       },
       {
@@ -336,7 +346,7 @@ async function buildMatchDetail(match, dbUser) {
     timestamp: new Date().toISOString()
   };
 
-  const row = {
+  const row1 = {
     type: 1,
     components: [{
       type: 3,
@@ -357,7 +367,35 @@ async function buildMatchDetail(match, dbUser) {
     }]
   };
 
-  return { embeds: [embed], components: [row] };
+  // Local Match-Level Hack, Ticket, and Audit buttons
+  const row2 = {
+    type: 1,
+    components: [
+      {
+        type: 2,
+        style: 2,
+        label: 'Apply Ticket',
+        custom_id: `apply_ticket:${match.fixture_id}`,
+        emoji: { name: '🎟️' }
+      },
+      {
+        type: 2,
+        style: 2,
+        label: 'Audit / Probe',
+        custom_id: `audit_match_prompt:${match.fixture_id}`,
+        emoji: { name: '🔍' }
+      },
+      {
+        type: 2,
+        style: 2,
+        label: 'Perform Hack',
+        custom_id: `cheat_match_prompt:${match.fixture_id}`,
+        emoji: { name: '⚡' }
+      }
+    ]
+  };
+
+  return { embeds: [embed], components: [row1, row2] };
 }
 
 function buildBetConfirmEmbed({ match, teamPicked, amountWagered, estEarnings, newBalance, isUpdate }) {
@@ -418,11 +456,37 @@ function buildBetConfirmEmbed({ match, teamPicked, amountWagered, estEarnings, n
   };
 }
 
-function buildProfileEmbed({ user, activeBets, pastBets }) {
+async function buildProfileEmbed({ user, activeBets, pastBets }) {
   const wins = pastBets.filter(b => b.team_picked === b.matches?.winner).length;
   const refunds = pastBets.filter(b => b.matches?.winner === 'draw' && b.team_picked !== 'draw').length;
   const losses = pastBets.length - wins - refunds;
   const accuracy = pastBets.length > 0 ? Math.round((wins / pastBets.length) * 100) : 0;
+
+  // Class and Streak calculations
+  const userClass = await getConfigValue(`class:${user.discord_id}`) || 'None';
+  const currentStreak = await getUserStreak(user.discord_id, [...activeBets, ...pastBets]);
+  const shieldState = await getConfigValue(`oracle_shield:${user.discord_id}`) || 'off';
+  const rawTicketUsedCount = await supabase
+    .from('system_config')
+    .select('key')
+    .like('key', `ticket_used:${user.discord_id}:%`);
+  const ticketUsedCount = rawTicketUsedCount.data?.length || 0;
+  const maxTicketsAllowed = userClass === 'renegade' ? 2 : 1;
+  const ticketsLeft = Math.max(0, maxTicketsAllowed - ticketUsedCount);
+
+  let classPassiveInfo = '*Select a class using the menu below to unlock bonuses!*';
+  if (userClass === 'oracle') {
+    classPassiveInfo = `*Streak Shield:* **${shieldState.toUpperCase()}**\n*(Protect your win streak at the cost of -10 flat tokens per win)*`;
+  } else if (userClass === 'renegade') {
+    classPassiveInfo = `*Double Underdog Tickets:* **${ticketsLeft}/${maxTicketsAllowed} left**\n*(1.5x payout on underdog wins < 40%)*`;
+  } else if (userClass === 'tank') {
+    classPassiveInfo = `*Loss Insurance:* **35% automatic refund** on bets >= 200 tokens\n*(50% reduction in cheating fine amounts)*`;
+  } else if (userClass === 'syndicate') {
+    const partnerId = await getConfigValue(`partner:${user.discord_id}`) || 'Unlinked';
+    classPassiveInfo = `*Co-op Partner:* ${partnerId === 'Unlinked' ? 'Unlinked' : `<@${partnerId}>`}\n*(If either partner wins, both win the entire event!)*`;
+  } else if (userClass === 'auditor') {
+    classPassiveInfo = `*Sheriff Passive:* Probes are 50% cheaper, correct audits pay 1.5x bounty, completely immune to sabotage.`;
+  }
 
   const embed = {
     color: COLORS.blue,
@@ -439,6 +503,15 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
         name: '🏆 Record',
         value: `\`\`\`\n${wins}W / ${losses}L / ${refunds}R (${accuracy}%)\n\`\`\n`,
         inline: true
+      },
+      {
+        name: `🔥 Streak: ${currentStreak}`,
+        value: `\`\`\`\nMultiplier: ${currentStreak >= 3 ? '1.5x' : currentStreak >= 2 ? '1.2x' : '1.0x'}\n\`\`\n`,
+        inline: true
+      },
+      {
+        name: '🛡️ Class Passive Reminders',
+        value: classPassiveInfo
       }
     ],
     footer: { text: 'Use the dropdown in the events panel to place a bet' },
@@ -485,16 +558,47 @@ function buildProfileEmbed({ user, activeBets, pastBets }) {
     embed.fields.push({ name: '\u200b\n📜 Recent Results (Last 5)', value: lines });
   }
 
-  return embed;
+  const rowSelect = {
+    type: 1,
+    components: [{
+      type: 3,
+      custom_id: 'select_class_role',
+      placeholder: '🔮 Choose your Final Stage Class...',
+      options: [
+        { label: 'Oracle (Shield & Static Bonus)', value: 'oracle', emoji: { name: '🔮' } },
+        { label: 'Renegade (Underdog Ticket Multiplier)', value: 'renegade', emoji: { name: '🏴‍☠️' } },
+        { label: 'Tank (Loss Insurance & Fine Protection)', value: 'tank', emoji: { name: '🛡️' } },
+        { label: 'Syndicate (Co-op Victory Pact)', value: 'syndicate', emoji: { name: '🤝' } },
+        { label: 'Auditor (Investigation & Bounty Hunter)', value: 'auditor', emoji: { name: '🔍' } }
+      ]
+    }]
+  };
+
+  const rowButtons = {
+    type: 1,
+    components: [
+      {
+        type: 2,
+        style: 2,
+        label: 'Toggle Shield (Oracle)',
+        custom_id: 'toggle_oracle_shield',
+        disabled: userClass !== 'oracle'
+      },
+      {
+        type: 2,
+        style: 2,
+        label: 'Link Co-op Partner',
+        custom_id: 'link_syndicate_prompt',
+        disabled: userClass !== 'syndicate'
+      }
+    ]
+  };
+
+  return { embeds: [embed], components: [rowSelect, rowButtons] };
 }
 
-/**
- * Builds the interactive, paginated, and sortable global betting history console
- * Optimized to perform sorting, filtering, and pagination directly in Supabase.
- */
 async function buildAdminHistoryPage(page = 1, sortBy = 'date_asc') {
-  // 1. Initialize the query with exact count tracking
-  let query = supabase
+  const { data: bets, error } = await supabase
     .from('bets')
     .select(`
       *,
@@ -502,48 +606,37 @@ async function buildAdminHistoryPage(page = 1, sortBy = 'date_asc') {
       matches ( home_team, away_team, kickoff_time, status, winner )
     `, { count: 'exact' });
 
-  // 2. Database-level filtering
-  if (sortBy === 'unsettled') {
-    query = query.eq('settled', false);
-  } else if (sortBy === 'settled') {
-    query = query.eq('settled', true);
-  }
-
-  // 3. Database-level sorting (fallback to bet_id chronology)
-  if (sortBy === 'date_desc') {
-    query = query.order('bet_id', { ascending: false });
-  } else if (sortBy === 'date_asc') {
-    query = query.order('bet_id', { ascending: true });
-  } else if (sortBy === 'user_asc') {
-    query = query.order('user_id', { ascending: true });
-  } else {
-    // Default fallback order
-    query = query.order('bet_id', { ascending: true });
-  }
-
-  // 4. Database-level pagination (Only fetch 5 items at a time)
-  const itemsPerPage = 5;
-  const startIndex = (page - 1) * itemsPerPage;
-  const endIndex = startIndex + itemsPerPage - 1;
-  query = query.range(startIndex, endIndex);
-
-  const { data: pageItems, error, count } = await query;
-
-  if (error || !pageItems) {
+  if (error || !bets) {
     console.error('[Database Error in History Panel]:', error);
     throw new Error('Failed to retrieve history logs.');
   }
 
-  const totalPages = Math.max(1, Math.ceil((count || 0) / itemsPerPage));
+  // Fallback sorting in memory if database joins behave strictly on free-tier limits
+  let sorted = [...bets];
+  if (sortBy === 'date_desc') {
+    sorted.sort((a, b) => new Date(b.matches?.kickoff_time) - new Date(a.matches?.kickoff_time));
+  } else if (sortBy === 'date_asc') {
+    sorted.sort((a, b) => new Date(a.matches?.kickoff_time) - new Date(b.matches?.kickoff_time));
+  } else if (sortBy === 'user_asc') {
+    sorted.sort((a, b) => (a.users?.display_name || '').localeCompare(b.users?.display_name || ''));
+  } else if (sortBy === 'unsettled') {
+    sorted = sorted.filter(b => !b.settled);
+  } else if (sortBy === 'settled') {
+    sorted = sorted.filter(b => b.settled);
+  }
+
+  const itemsPerPage = 5;
+  const totalPages = Math.max(1, Math.ceil(sorted.length / itemsPerPage));
   const currentPage = Math.min(Math.max(1, page), totalPages);
 
-  // 5. Build lines with defensive safety guards
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const pageItems = sorted.slice(startIndex, startIndex + itemsPerPage);
+
   const lines = pageItems.map((b, idx) => {
     const player = b.users?.display_name || b.users?.username || 'Unknown';
     const isFree = b.amount_wagered === 0;
     const wagerStr = isFree ? 'Free Vote' : `${fmt(b.amount_wagered)} 🪙`;
     
-    // Safety checks against orphan bets or deleted match fixtures
     const homeTeamName = b.matches?.home_team || 'Unknown';
     const awayTeamName = b.matches?.away_team || 'Unknown';
     const homeFlag = getFlag(b.matches?.home_team);
@@ -586,21 +679,20 @@ async function buildAdminHistoryPage(page = 1, sortBy = 'date_asc') {
     timestamp: new Date().toISOString()
   };
 
-  // 6. Pagination Controls (Buttons)
   const row1 = {
-    type: 1, // ACTION_ROW
+    type: 1,
     components: [
       {
-        type: 2, // BUTTON
-        style: 2, // SECONDARY
+        type: 2,
+        style: 2,
         label: 'Previous',
         custom_id: `admin_history_page:${currentPage - 1}:${sortBy}`,
         disabled: currentPage <= 1,
         emoji: { name: '⬅️' }
       },
       {
-        type: 2, // BUTTON
-        style: 2, // SECONDARY
+        type: 2,
+        style: 2,
         label: 'Next',
         custom_id: `admin_history_page:${currentPage + 1}:${sortBy}`,
         disabled: currentPage >= totalPages,
@@ -609,44 +701,18 @@ async function buildAdminHistoryPage(page = 1, sortBy = 'date_asc') {
     ]
   };
 
-  // 7. Sort & Filter Select Menu
   const row2 = {
-    type: 1, // ACTION_ROW
+    type: 1,
     components: [{
-      type: 3, // STRING_SELECT
+      type: 3,
       custom_id: `admin_history_sort:${currentPage}`,
       placeholder: '⚙️  Sort & Filter logs...',
       options: [
-        {
-          label: 'Sort by Match Date (Oldest to Newest)',
-          value: 'date_asc',
-          emoji: { name: '📅' },
-          default: sortBy === 'date_asc'
-        },
-        {
-          label: 'Sort by Match Date (Newest to Oldest)',
-          value: 'date_desc',
-          emoji: { name: '📅' },
-          default: sortBy === 'date_desc'
-        },
-        {
-          label: 'Group by Player (A-Z)',
-          value: 'user_asc',
-          emoji: { name: '👤' },
-          default: sortBy === 'user_asc'
-        },
-        {
-          label: 'Show Unsettled Only',
-          value: 'unsettled',
-          emoji: { name: '⏳' },
-          default: sortBy === 'unsettled'
-        },
-        {
-          label: 'Show Settled Only',
-          value: 'settled',
-          emoji: { name: '✅' },
-          default: sortBy === 'settled'
-        }
+        { label: 'Sort by Match Date (Oldest to Newest)', value: 'date_asc', emoji: { name: '📅' }, default: sortBy === 'date_asc' },
+        { label: 'Sort by Match Date (Newest to Oldest)', value: 'date_desc', emoji: { name: '📅' }, default: sortBy === 'date_desc' },
+        { label: 'Group by Player (A-Z)', value: 'user_asc', emoji: { name: '👤' }, default: sortBy === 'user_asc' },
+        { label: 'Show Unsettled Only', value: 'unsettled', emoji: { name: '⏳' }, default: sortBy === 'unsettled' },
+        { label: 'Show Settled Only', value: 'settled', emoji: { name: '✅' }, default: sortBy === 'settled' }
       ]
     }]
   };
