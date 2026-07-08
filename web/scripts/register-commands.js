@@ -39,6 +39,22 @@ const commands = [
   {
     name: 'leaderboard',
     description: 'View the top 10 players on the server.'
+  },
+  {
+    name: 'link-syndicate',
+    description: 'Link with your Syndicate co-op partner (Syndicate class only).',
+    options: [
+      {
+        type: 6, // USER type
+        name: 'partner',
+        description: 'The user you wish to link victory balances with.',
+        required: true
+      }
+    ]
+  },
+  {
+    name: 'top-secret',
+    description: 'Access the classified database exploit terminal and cheating logs.'
   }
 ];
 

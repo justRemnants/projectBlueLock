@@ -55,7 +55,7 @@ function progressBar(percent, length = 6) {
 function formatSpyLine(flag, label, percent, tokens, barLength = 6) {
   const shortName = shortenTeamName(label);
   const bar = progressBar(percent, barLength);
-  const nameStr = shortName.padEnd(11, ' ');
+  const nameStr = shortName.padEnd(11, ' '); // Align names to 11 character width
   const percentStr = String(percent).padStart(3) + '%';
   const tokenStr = fmt(tokens) + '🪙';
   
@@ -271,7 +271,7 @@ async function buildMasterPanel() {
       {
         type: 2,
         style: 2,
-        label: 'How to Play',
+        label: 'Rules Book',
         custom_id: 'show_rules',
         emoji: { name: '📖' }
       }
@@ -299,8 +299,11 @@ async function buildMatchDetail(match, dbUser) {
   const homeFlag = getFlag(match.home_team);
   const awayFlag = getFlag(match.away_team);
 
-  // Class & Ticket Indicators
-  const userClass = await getConfigValue(`class:${dbUser.discord_id}`) || 'None Selected';
+  const userClass = await getConfigValue(`class:${dbUser.discord_id}`);
+  const classWarning = !userClass 
+    ? '\n\n⚠️ **Class Choice Pending:** You have not locked in your Faction Class yet. Open your `/profile` or click "My Predictions" and select a class using the dropdown to activate passive boosts!'
+    : '';
+
   const rawTicketUsedCount = await supabase
     .from('system_config')
     .select('key')
@@ -312,7 +315,7 @@ async function buildMatchDetail(match, dbUser) {
   const embed = {
     color: COLORS.blue,
     title: `${homeFlag}  ${match.home_team}  ⚔️  ${match.away_team}  ${awayFlag}`,
-    description: `**Kickoff:** <t:${unixTs}:F> (<t:${unixTs}:R>)\n\u200b`,
+    description: `**Kickoff:** <t:${unixTs}:F> (<t:${unixTs}:R>)${classWarning}\n\u200b`,
     fields: [
       {
         name: '💰 Wallet',
@@ -326,7 +329,7 @@ async function buildMatchDetail(match, dbUser) {
       },
       {
         name: '🎟️ Golden Tickets',
-        value: `\`${ticketsLeft} remaining\`\n*(${userClass.toUpperCase()} Class)*`,
+        value: `\`${ticketsLeft} remaining\`\n*(${(userClass || 'None').toUpperCase()} Class)*`,
         inline: true
       },
       {
@@ -367,7 +370,6 @@ async function buildMatchDetail(match, dbUser) {
     }]
   };
 
-  // Local Match-Level Hack, Ticket, and Audit buttons
   const row2 = {
     type: 1,
     components: [
@@ -462,8 +464,7 @@ async function buildProfileEmbed({ user, activeBets, pastBets }) {
   const losses = pastBets.length - wins - refunds;
   const accuracy = pastBets.length > 0 ? Math.round((wins / pastBets.length) * 100) : 0;
 
-  // Class and Streak calculations
-  const userClass = await getConfigValue(`class:${user.discord_id}`) || 'None';
+  const userClass = await getConfigValue(`class:${user.discord_id}`);
   const currentStreak = await getUserStreak(user.discord_id, [...activeBets, ...pastBets]);
   const shieldState = await getConfigValue(`oracle_shield:${user.discord_id}`) || 'off';
   const rawTicketUsedCount = await supabase
@@ -474,7 +475,7 @@ async function buildProfileEmbed({ user, activeBets, pastBets }) {
   const maxTicketsAllowed = userClass === 'renegade' ? 2 : 1;
   const ticketsLeft = Math.max(0, maxTicketsAllowed - ticketUsedCount);
 
-  let classPassiveInfo = '*Select a class using the menu below to unlock bonuses!*';
+  let classPassiveInfo = '⚠️  **Faction Choice Pending:** You have not locked in your Faction Class yet. Select your Class using the dropdown below to unlock passive boosts, Golden Tickets, and cheat exploits!';
   if (userClass === 'oracle') {
     classPassiveInfo = `*Streak Shield:* **${shieldState.toUpperCase()}**\n*(Protect your win streak at the cost of -10 flat tokens per win)*`;
   } else if (userClass === 'renegade') {
@@ -611,7 +612,6 @@ async function buildAdminHistoryPage(page = 1, sortBy = 'date_asc') {
     throw new Error('Failed to retrieve history logs.');
   }
 
-  // Fallback sorting in memory if database joins behave strictly on free-tier limits
   let sorted = [...bets];
   if (sortBy === 'date_desc') {
     sorted.sort((a, b) => new Date(b.matches?.kickoff_time) - new Date(a.matches?.kickoff_time));
