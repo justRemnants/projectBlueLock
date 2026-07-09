@@ -392,9 +392,8 @@ async function handleComponent(interaction, res) {
         },
         { timeout: 8000 }
       );
-      return;
     } catch (err) {
-      console.error('[Dropdown Reset Hook Error]:', err.message);
+      console.error('[Dropdown Reset Hook Error]:', err.response ? JSON.stringify(err.response.data) : err.message);
     }
   }
 

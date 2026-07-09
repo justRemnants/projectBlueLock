@@ -360,12 +360,12 @@ async function buildMatchDetail(match, dbUser) {
         {
           label: `${match.home_team} Win`,
           value: 'home',
-          emoji: { name: homeFlag }
+          emoji: { name: '🏠' }
         },
         {
           label: `${match.away_team} Win`,
           value: 'away',
-          emoji: { name: awayFlag }
+          emoji: { name: '✈️' }
         }
       ]
     }]
