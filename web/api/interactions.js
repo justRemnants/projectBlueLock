@@ -3,7 +3,7 @@
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
  * Upgraded to force class selection on next interaction, support the mutual Syndicate linking handshake,
- * process the new /top-secret command, and ensure all panel updates complete processing before serverless thread termination.
+ * process the new /top-secret command, handle Stage-based Golden Ticket resets, and toggle tickets off before kickoff.
  */
 
 require('dotenv').config();
@@ -101,6 +101,18 @@ async function buildLeaderboardEmbed() {
   };
 }
 
+function getStage(kickoffStr) {
+  const date = new Date(kickoffStr);
+  const day = date.getUTCDate();
+  const month = date.getUTCMonth() + 1;
+  if (month === 7) {
+    if (day <= 11) return 'qf';
+    if (day <= 14) return 'sf';
+    return 'gf';
+  }
+  return 'qf';
+}
+
 const T = { PING: 1, COMMAND: 2, COMPONENT: 3, MODAL_SUBMIT: 5 };
 const R = { PONG: 1, MESSAGE: 4, DEFERRED_MESSAGE: 5, DEFERRED_UPDATE: 6, UPDATE_MESSAGE: 7, MODAL: 9 };
 const FLAGS = { EPHEMERAL: 64 };
@@ -110,7 +122,7 @@ async function handleCommand(interaction, res) {
   const user = interaction.member?.user || interaction.user;
   const channelId = interaction.channel_id;
 
-  if (name === 'setup-panel') {
+  if (name === 'panel') {
     try {
       const panelData = await buildMasterPanel();
       const response = await axios.post(
@@ -128,7 +140,7 @@ async function handleCommand(interaction, res) {
     }
   }
 
-  if (name === 'sync-matches') {
+  if (name === 'sync') {
     const useMock = interaction.data.options?.find(o => o.name === 'mock')?.value ?? false;
     try {
       const result = useMock ? await syncMockFixtures() : await syncFixtures();
@@ -187,10 +199,9 @@ async function handleCommand(interaction, res) {
       }
 
       await setConfigValue(`link_request:${user.id}`, partnerId);
+      const partnerRequest = await getConfigValue(`link_request:${partnerId}`);
 
-      const targetRequest = await getConfigValue(`link_request:${partnerId}`);
-
-      if (targetRequest === user.id) {
+      if (partnerRequest === user.id) {
         await setConfigValue(`partner:${user.id}`, partnerId);
         await setConfigValue(`partner:${partnerId}`, user.id);
         
@@ -208,7 +219,7 @@ async function handleCommand(interaction, res) {
           type: R.MESSAGE,
           data: {
             flags: FLAGS.EPHEMERAL,
-            content: `✅  **Co-op Request Sent!**\n\nWaiting for <@${partnerId}> to execute \`/link-syndicate @${user.username}\` to complete the handshake connection.`
+            content: `✅  **Co-op Request Sent!** Waiting for <@${partnerId}> to execute \`/link-syndicate partner: @${user.username}\` to complete the handshake connection.`
           }
         });
       }
@@ -225,26 +236,27 @@ async function handleCommand(interaction, res) {
         embeds: [{
           color: 0x9b59b6, // Purple
           title: '🕵️‍♂️ Classified Transmission: Illicit Cheat Deck',
-          description: 'Below are the protocols and database vulnerabilities that can be exploited during the final tournament stages.\n\u200b',
+          description: 'Below are the protocols and database vulnerabilities that can be exploited during the final tournament stages.\n\n' +
+                      '🔒 **Instruction:** To execute these exploits, click the **stealth/blank button** (` ` with no text) located next to "Investigate" on any Match Detail panel.',
           fields: [
             {
               name: '🔄 Cheat 1: The Half-Time Pivot (Cost: 40🪙)',
-              value: '• **Trigger Requirement:** You must place a wager ending in an **ODD number** (e.g., 103, 51) *before* kickoff.\n• **The Hack:** During half-time, execute the hack to shift **100%** of your wager to the other team.\n• **Risk:** Competitors can run probes to audit and expose your late shift.'
+              value: '• **Trigger Requirement:** You must place a wager ending in an **ODD number** (e.g., 103, 51) *before* kickoff.\n• **The Hack:** During half-time, execute the hack to shift **100%** of your wager to the other team.\n• **Risk:** Competitors can run investigations to audit and expose your late shift.'
             },
             {
               name: '👻 Cheat 2: The Ghost Wager (Cost: 30🪙)',
-              value: '• **The Hack:** Sneak up to **150 fake tokens** on credit over your maximum allowed bet limit.\n• **Clues:** Generates a public ledger corruption `~` marker on the leaderboard or triggers a scrambled bank audit alert in the public chat.'
+              value: '• **The Hack:** Sneak up to **150 fake tokens** on credit directly into your active wager.\n• **Clues:** Generates a public ledger corruption `~` marker on the leaderboard or triggers a scrambled bank audit alert in the public chat.'
             },
             {
-              name: '💥 Cheat 3: System Sabotage (Cost: 50🪙)',
-              value: '• **The Hack:** Target any active bet on your match card and force-shift their prediction wager by **50 tokens**.\n• **Clues:** The victim receives a DM warning identifying your *Class* (e.g. Renegade, Oracle). They can cross-reference the public board to trace you.'
+              name: '💥 Cheat 3: System Sabotage (Cost: 20🪙)',
+              value: '• **The Hack:** Target any active bet on your match card and force-shift their prediction wager by **50 tokens**.\n• **Clues:** The victim receives a DM warning identifying your *Class*.\n⚠️ **Warning:** Targeting an Investigator will fully expose your username identity to them!'
             },
             {
               name: '🚨 Penalty Matrix',
-              value: 'If audited and caught by another player:\n• All siphoned/ghost tokens are deleted and shifted bets canceled.\n• You are fined up to **100 tokens** (50 for Tanks).\n• Your active win streak is wiped instantly!'
+              value: 'If investigated and caught by another player:\n• All siphoned/ghost tokens are deleted and shifted bets canceled.\n• You are fined up to **30 tokens** (15 for Tanks).\n• Your active win streak is wiped instantly!'
             }
           ],
-          footer: { text: 'To perform these exploits, use the "Perform Hack" button on any Match Detail panel.' }
+          footer: { text: 'To perform these exploits, use the blank button on any Match Detail panel.' }
         }]
       }
     });
@@ -304,25 +316,30 @@ async function handleComponent(interaction, res) {
       const dbUser = await getOrCreateUser(user);
       const matches = await getActiveMatches();
       const match = matches.find(m => m.fixture_id === fixtureId);
-      if (!match) return sendJson(res, errorEmbed('Match not found in the database.'));
+      if (!match) return sendJson(res, errorEmbed('Match not found.'));
 
-      const kickedOff = new Date() >= new Date(match.kickoff_time);
-      if (kickedOff || match.status !== 'NS') {
-        return sendJson(res, errorEmbed('This match has already kicked off! Predictions are locked.'));
-      }
-
-      const detail = await buildMatchDetail(match, dbUser);
-      
-      return sendJson(res, {
-        type: R.MESSAGE,
+      const panelReset = await buildMasterPanel();
+      sendJson(res, {
+        type: R.UPDATE_MESSAGE,
         data: {
-          flags: FLAGS.EPHEMERAL,
-          embeds: detail.embeds,
-          components: detail.components
+          embeds: panelReset.embeds,
+          components: panelReset.components
         }
       });
+
+      const detail = await buildMatchDetail(match, dbUser);
+      await axios.post(
+        `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`,
+        {
+          embeds: detail.embeds,
+          components: detail.components,
+          flags: FLAGS.EPHEMERAL
+        },
+        { timeout: 8000 }
+      );
+      return;
     } catch (err) {
-      return sendJson(res, errorEmbed("```\n" + err.message + "\n```"));
+      console.error('[Dropdown Reset Hook Error]:', err.message);
     }
   }
 
@@ -392,7 +409,7 @@ async function handleComponent(interaction, res) {
           {
             color: COLORS.gold,
             title: '📖  World Cup 2026: Official Rule Book  ·  Project Blue-Lock',
-            description: 'Navigate through the standard and advanced mechanics for the knockout stage tournament.\n\u200b',
+            description: '\u200b',
             fields: [
               {
                 name: '1️⃣  Payout Calculations',
@@ -403,36 +420,32 @@ async function handleComponent(interaction, res) {
                 value: '```\n> 80% vote share  →  1.0x  (heavy favourite)\n50–80%           →  1.0x  (standard split)\n20–50%           →  1.10x ⬆  (mild underdog)\n< 20%            →  1.20x  🔥 (miracle jackpot)\n```'
               },
               {
-                name: '3️⃣  Classes',
-                value: '🧬 **Oracle:** Toggles Streak Shield. Win bonus is +25 tokens (+15 when shielded).\n' +
-                       '🏴‍☠️ **Renegade:** Receives 2 underdog Golden Tickets (Double profit) instead of 1.\n' +
-                       '🛡️ **Tank:** Automatically receive 35% insurance refund on bets >= 200 tokens. Caught cheating fines are halved.\n' +
-                       '🤝 **Syndicate:** Cooperative victory pact. If either partner wins, both win the entire event! *(Requires linking first using `/link-syndicate`)*\n' +
-                       '🔍 **Auditor:** Auditing competitors is 50% cheaper, gets 1.5x catch bounty, immune to sabotage.'
+                name: '3️⃣  Golden Tickets 🎟️',
+                value: 'Activating a Golden Ticket does not cost any extra tokens, but **doubles your net profit** on that bet if your prediction is correct. Standard classes receive **1 ticket**; Renegades receive **2 tickets** (restricted strictly to underdog matches).'
               },
               {
-                name: '4️⃣  Catching Cheaters (Match Auditing)',
-                value: 'Click **`Audit / Probe`** on any Match Detail Panel to investigate competitors betting on that match.\n' +
-                       '• Cost: `30 tokens` (`15` for Auditors).\n' +
-                       '• **Success:** Target is fined up to 100 tokens, and you win a **+150 token bounty**!\n' +
-                       '• **Failure:** If target is innocent, your audit tokens are transferred to their wallet as damages.'
+                name: '4️⃣  Faction Classes (Classes)',
+                value: '🧬 **Oracle:** Has 1 streak shield per stage and gets a flat 25 token boost to base payment (15 when shield is active).\n' +
+                       '🏴‍☠️ **Renegade:** Receives two golden tickets rather than one, however they can only be used when betting on an underdog.\n' +
+                       '🛡️ **Tank:** Automatically receives a 35% refund on lost bets over 200 tokens and any fines are halved.\n' +
+                       '🤝 **Syndicate:** Plays with a partner. Streak bonuses are shared and if one player wins the event, they both share the victory. 15% more winnings from bets, however a 20 token fee for losses.\n' +
+                       '🔍 **Investigator:** Investigating others is 50% cheaper, plus receives immunity to sabotages.'
               },
               {
-                name: '🎮 General Commands (FYI)',
-                value: '• `/profile` - View token balance, predictions history, streaks, and select Class.\n' +
-                       '• `/leaderboard` - Public leaderboard with active Classes and Streaks.\n' +
-                       '• `/link-syndicate @User` - Link with co-op partner (Syndicate class only).\n' +
-                       '• `/top-secret` - Classified hacking logs.'
+                name: '5️⃣  Investigating Cheaters (Match Auditing)',
+                value: 'Click **`Investigate`** on any Match Detail Panel to audit competitors.\n' +
+                       '• Cost: `30 tokens` (`15` for Investigators).\n' +
+                       '• **Success:** Target is fined **30 tokens**, and you win **75 + cost tokens** as a bounty!\n' +
+                       '• **Failure:** If the target is innocent, they receive 10 tokens.'
               }
             ],
-            footer: { text: '💡 To view the hidden cheats deck, execute /top-secret.' }
+            footer: { text: 'Something /top-secret is going on...' }
           }
         ]
       }
     });
   }
 
-  // Handle Class Role Selection Component
   if (customId === 'select_class_role') {
     const chosenClass = interaction.data.values[0];
     try {
@@ -442,8 +455,8 @@ async function handleComponent(interaction, res) {
           return sendJson(res, errorEmbed(
             "❌  **Selection Blocked!**\n\n" +
             "To select the Syndicate class, you must first establish a mutual co-op link with another player.\n\n" +
-            "1. Run `/link-syndicate @User` to link with your partner.\n" +
-            "2. Have your partner run `/link-syndicate @YourName` to accept.\n" +
+            "1. Run `/link-syndicate` selecting your partner to send a link request.\n" +
+            "2. Have your partner run `/link-syndicate` selecting you to accept.\n" +
             "3. Once linked, you can select the Syndicate class!"
           ));
         }
@@ -462,7 +475,6 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Handle Oracle Toggle Component
   if (customId === 'toggle_oracle_shield') {
     try {
       const current = await getConfigValue(`oracle_shield:${user.id}`) || 'off';
@@ -480,17 +492,66 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Handle Apply Golden Ticket Component
+  // Handle Golden Ticket Toggle Behavior (Apply / Cancel before kickoff)
   if (customId.startsWith('apply_ticket:')) {
     const fixtureId = customId.split(':')[1];
     try {
-      const userClass = await getConfigValue(`class:${user.id}`);
-      const rawTickets = await supabase.from('system_config').select('key').like('key', `ticket_used:${user.id}:%`);
-      const ticketsUsed = rawTickets.data?.length || 0;
-      const maxTickets = userClass === 'renegade' ? 2 : 1;
+      const match = (await getActiveMatches()).find(m => m.fixture_id === fixtureId);
+      if (!match) return sendJson(res, errorEmbed('Match not found.'));
+      if (new Date() >= new Date(match.kickoff_time)) {
+        return sendJson(res, errorEmbed('Failed! This match has already kicked off and golden tickets are locked.'));
+      }
 
-      if (ticketsUsed >= maxTickets) {
-        return sendJson(res, errorEmbed(`Failed! You have no Golden Tickets remaining (Used: ${ticketsUsed}/${maxTickets}).`));
+      const activeState = await getConfigValue(`ticket_used:${user.id}:${fixtureId}`);
+      if (activeState === 'true') {
+        // Remove ticket and return to inventory
+        await setConfigValue(`ticket_used:${user.id}:${fixtureId}`, '');
+        return sendJson(res, {
+          type: R.MESSAGE,
+          data: {
+            flags: FLAGS.EPHEMERAL,
+            content: '🎟️  **Golden Ticket Cancelled!** The ticket has been safely returned to your inventory.'
+          }
+        });
+      }
+
+      // Proceed with applying the ticket
+      const userClass = await getConfigValue(`class:${user.id}`);
+      const currentStage = getStage(match.kickoff_time);
+
+      // Fetch all matches to identify stages of previous ticket uses
+      const rawTickets = await supabase.from('system_config').select('key').like('key', `ticket_used:${user.id}:%`);
+      const activeUsedFixtureIds = (rawTickets.data || [])
+        .map(t => t.key.split(':').pop())
+        .filter(fid => fid && fid !== fixtureId);
+
+      let ticketsUsedInCurrentStage = 0;
+      if (activeUsedFixtureIds.length > 0) {
+        const matches = await getActiveMatches();
+        for (const fid of activeUsedFixtureIds) {
+          const pastMatch = matches.find(m => m.fixture_id === fid);
+          if (pastMatch && getStage(pastMatch.kickoff_time) === currentStage) {
+            ticketsUsedInCurrentStage++;
+          }
+        }
+      }
+
+      const maxTickets = userClass === 'renegade' ? 2 : 1;
+      if (ticketsUsedInCurrentStage >= maxTickets) {
+        return sendJson(res, errorEmbed(`Failed! You have no Golden Tickets remaining for the ${currentStage.toUpperCase()} stage (Used: ${ticketsUsedInCurrentStage}/${maxTickets}).`));
+      }
+
+      if (userClass === 'renegade') {
+        const spy = await getSpyMetric(fixtureId);
+        const total = spy.totalVotes || 0;
+        const bets = await supabase.from('bets').select('*').eq('user_id', user.id).eq('fixture_id', fixtureId).single();
+        if (bets.data) {
+          const pick = bets.data.team_picked;
+          const share = total > 0 ? (spy[pick].votes / total) : 0.5;
+          if (share >= 0.40) {
+            return sendJson(res, errorEmbed('Failed! Renegades can only apply Golden Tickets on Underdogs (<40% vote share).'));
+          }
+        }
       }
 
       await setConfigValue(`ticket_used:${user.id}:${fixtureId}`, 'true');
@@ -506,13 +567,12 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Handle Local Match Audit Trigger Component
   if (customId.startsWith('audit_match_prompt:')) {
     const fixtureId = customId.split(':')[1];
     try {
       const bets = await supabase.from('bets').select('user_id').eq('fixture_id', fixtureId);
       const userClass = await getConfigValue(`class:${user.id}`) || 'None';
-      const cost = userClass === 'auditor' ? 15 : 30;
+      const cost = userClass === 'investigator' ? 15 : 30;
 
       if (!bets.data || bets.data.length <= 1) {
         return sendJson(res, errorEmbed('No other players have placed predictions on this match yet.'));
@@ -544,13 +604,12 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Handle Execution of User Investigation Component
   if (customId === 'perform_user_audit') {
     const [targetId, fixtureId] = interaction.data.values[0].split(':');
     try {
       const dbUser = await getOrCreateUser(user);
       const userClass = await getConfigValue(`class:${user.id}`) || 'None';
-      const cost = userClass === 'auditor' ? 15 : 30;
+      const cost = userClass === 'investigator' ? 15 : 30;
 
       if (dbUser.tokens_balance < cost) {
         return sendJson(res, errorEmbed(`Insufficient tokens. Audit costs ${cost} (Balance: ${dbUser.tokens_balance}).`));
@@ -560,32 +619,42 @@ async function handleComponent(interaction, res) {
 
       const cheatUsed = await getConfigValue(`cheat:${targetId}:${fixtureId}`);
       if (cheatUsed) {
+        const actualFine = 30;
         const targetClass = await getConfigValue(`class:${targetId}`);
-        const fine = targetClass === 'tank' ? 50 : 100;
+        const fineApplied = targetClass === 'tank' ? 15 : actualFine;
 
         const targetUser = await supabase.from('users').select('tokens_balance').eq('discord_id', targetId).single();
-        const nextBal = Math.max(0, (targetUser.data?.tokens_balance || 0) - fine);
+        const nextBal = Math.max(0, (targetUser.data?.tokens_balance || 0) - fineApplied);
+
+        if (cheatUsed === 'ghost') {
+          const targetBet = await supabase.from('bets').select('*').eq('user_id', targetId).eq('fixture_id', fixtureId).single();
+          if (targetBet.data) {
+            await supabase.from('bets').update({ amount_wagered: Math.max(0, targetBet.data.amount_wagered - 150) }).eq('user_id', targetId).eq('fixture_id', fixtureId);
+          }
+        }
 
         await supabase.from('users').update({ tokens_balance: nextBal }).eq('discord_id', targetId);
-        await supabase.from('users').update({ tokens_balance: dbUser.tokens_balance - cost + 150 }).eq('discord_id', user.id);
-        await setConfigValue(`cheat:${targetId}:${fixtureId}`, ''); // Clear the cheat record
+        
+        const bounty = 75 + cost;
+        await supabase.from('users').update({ tokens_balance: dbUser.tokens_balance - cost + bounty }).eq('discord_id', user.id);
+        await setConfigValue(`cheat:${targetId}:${fixtureId}`, '');
 
         return sendJson(res, {
           type: R.MESSAGE,
           data: {
-            content: `🚨  **WHISTLEBLOWER BREACH**  🚨\n\n<@${user.id}> caught <@${targetId}> utilizing forbidden database cheats on match \`${fixtureId}\`!\n• <@${targetId}> has been fined **${fine} tokens**.\n• <@${user.id}> has received a **+150 token Whistleblower Bounty**!`
+            content: `🚨  **WHISTLEBLOWER BREACH**  🚨\n\n<@${user.id}> caught <@${targetId}> utilizing database hacks on match \`${fixtureId}\`!\n• <@${targetId}> has been fined **${fineApplied} tokens**.\n• <@${user.id}> has received a **+${bounty} token Bounty Reward**!`
           }
         });
       } else {
         const targetUser = await supabase.from('users').select('tokens_balance').eq('discord_id', targetId).single();
-        const nextBal = (targetUser.data?.tokens_balance || 0) + cost;
+        const nextBal = (targetUser.data?.tokens_balance || 0) + 10;
         await supabase.from('users').update({ tokens_balance: nextBal }).eq('discord_id', targetId);
 
         return sendJson(res, {
           type: R.MESSAGE,
           data: {
             flags: FLAGS.EPHEMERAL,
-            content: `🛡️  **Investigation Clean.** Target is innocent. Your ${cost} tokens have been paid to <@${targetId}> as false accusation damages.`
+            content: `🛡️  **Investigation Clean.** Target is innocent. Your ${cost} tokens have been processed. Target received +10 tokens compensation.`
           }
         });
       }
@@ -594,14 +663,13 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Handle Cheat Initialization Component
   if (customId.startsWith('cheat_match_prompt:')) {
     const fixtureId = customId.split(':')[1];
     return sendJson(res, {
       type: R.MESSAGE,
       data: {
         flags: FLAGS.EPHEMERAL,
-        content: `⚡  **Active Exploit Terminal**\nSelect a database vulnerability to run on match \`${fixtureId}\`:`,
+        content: `⚡  **Active Exploit Terminal**\nSelect a database vulnerability to run on match \`${fixtureId}\`:\n\n*⚠️ Warning: Targets with the **Investigator** class will automatically expose your identity directly to their DMs!*`,
         components: [{
           type: 1,
           components: [{
@@ -610,8 +678,8 @@ async function handleComponent(interaction, res) {
             placeholder: 'Choose exploit...',
             options: [
               { label: 'Half-Time Pivot (100% Bet shift) - Cost: 40🪙', value: 'pivot', emoji: { name: '🔄' } },
-              { label: 'Ghost Wager (Borrow up to 150 fake tokens) - Cost: 30🪙', value: 'ghost', emoji: { name: '👻' } },
-              { label: 'Sabotage Opponent Prediction (Alters bet) - Cost: 50🪙', value: 'sabotage', emoji: { name: '💥' } }
+              { label: 'Ghost Wager (+150 Tokens additions) - Cost: 30🪙', value: 'ghost', emoji: { name: '👻' } },
+              { label: 'Sabotage Opponent Prediction (Alters bet) - Cost: 20🪙', value: 'sabotage', emoji: { name: '💥' } }
             ]
           }]
         }]
@@ -619,7 +687,6 @@ async function handleComponent(interaction, res) {
     });
   }
 
-  // Handle Choosing Specific Exploit Component
   if (customId.startsWith('perform_cheat_selection:')) {
     const fixtureId = customId.split(':')[1];
     const chosenCheat = interaction.data.values[0];
@@ -627,8 +694,8 @@ async function handleComponent(interaction, res) {
     try {
       const dbUser = await getOrCreateUser(user);
       const userClass = await getConfigValue(`class:${user.id}`) || 'None';
-      const costMap = { pivot: 40, ghost: 30, sabotage: 50 };
-      const rawCost = costMap[chosenCheat] || 50;
+      const costMap = { pivot: 40, ghost: 30, sabotage: 20 };
+      const rawCost = costMap[chosenCheat] || 20;
       const cost = userClass === 'rogue' ? Math.round(rawCost * 0.70) : rawCost;
 
       if (dbUser.tokens_balance < cost) {
@@ -672,7 +739,6 @@ async function handleComponent(interaction, res) {
         });
       }
 
-      // Execute Ghost / Pivot
       await supabase.from('users').update({ tokens_balance: dbUser.tokens_balance - cost }).eq('discord_id', user.id);
       await setConfigValue(`cheat:${user.id}:${fixtureId}`, chosenCheat);
 
@@ -692,6 +758,11 @@ async function handleComponent(interaction, res) {
       }
 
       if (chosenCheat === 'ghost') {
+        const bet = await supabase.from('bets').select('*').eq('user_id', user.id).eq('fixture_id', fixtureId).single();
+        if (bet.data) {
+          await supabase.from('bets').update({ amount_wagered: bet.data.amount_wagered + 150 }).eq('user_id', user.id).eq('fixture_id', fixtureId);
+        }
+
         const clue = Math.random() > 0.5 ? 'clueA' : 'clueC';
         if (clue === 'clueA') {
           await setConfigValue(`ledger_corrupted:${user.id}`, 'true');
@@ -707,7 +778,7 @@ async function handleComponent(interaction, res) {
           type: R.MESSAGE,
           data: {
             flags: FLAGS.EPHEMERAL,
-            content: '👻  **Ghost Exploit Active!** Injected 150 phantom tokens on credit.'
+            content: '👻  **Ghost Exploit Active!** Added 150 fake tokens directly to your active wager on credit.'
           }
         });
       }
@@ -716,17 +787,25 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Handle Execute Sabotage Component
   if (customId === 'execute_sabotage_select') {
     const [targetId, fixtureId] = interaction.data.values[0].split(':');
     try {
       const dbUser = await getOrCreateUser(user);
       const userClass = await getConfigValue(`class:${user.id}`) || 'None';
-      const cost = userClass === 'rogue' ? 35 : 50;
+      const cost = userClass === 'rogue' ? 14 : 20;
 
       const targetClass = await getConfigValue(`class:${targetId}`);
-      if (targetClass === 'auditor') {
-        return sendJson(res, errorEmbed('System Error! Victim class "Auditor" is immune to system interference.'));
+      if (targetClass === 'investigator') {
+        try {
+          const ch = await axios.post('https://discord.com/api/v10/users/@me/channels', { recipient_id: targetId }, { headers: { Authorization: `Bot ${BOT_TOKEN}` } });
+          await axios.post(`https://discord.com/api/v10/channels/${ch.data.id}/messages`, {
+            content: `🛡️  **Firewall Detection:** <@${user.id}> (\`@${user.username}\`) attempted to sabotage your prediction on Match \`${fixtureId}\`, but your **Investigator Security Protocol** automatically blocked and identified them!`
+          }, { headers: { Authorization: `Bot ${BOT_TOKEN}` } });
+        } catch (dmErr) {
+          console.warn('Could not DM investigator alert:', dmErr.message);
+        }
+
+        return sendJson(res, errorEmbed('System Hack Blocked! Target is an Investigator. Your payload has failed and your username has been exposed to them!'));
       }
 
       await supabase.from('users').update({ tokens_balance: dbUser.tokens_balance - cost }).eq('discord_id', user.id);
@@ -737,7 +816,6 @@ async function handleComponent(interaction, res) {
       const change = Math.random() > 0.5 ? 50 : -50;
       await supabase.from('bets').update({ amount_wagered: Math.max(0, current + change) }).eq('user_id', targetId).eq('fixture_id', fixtureId);
 
-      // DM victim
       try {
         const ch = await axios.post('https://discord.com/api/v10/users/@me/channels', { recipient_id: targetId }, { headers: { Authorization: `Bot ${BOT_TOKEN}` } });
         await axios.post(`https://discord.com/api/v10/channels/${ch.data.id}/messages`, {

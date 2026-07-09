@@ -3,7 +3,7 @@ name: Deploy to JustRunMy.App
 on:
   push:
     branches:
-      - main # Deploys automatically when commits are pushed to the main branch
+      - main # Automatically deploys when you push commits to the main branch
 
 jobs:
   deploy:
@@ -14,9 +14,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Deploy via Git Push
+      - name: Push to JRMA Production Deploy Branch
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          # Pushes the workspace to your JRMA custom Git remote using repository secrets
-          git push --force "https://${{ secrets.JRMA_USERNAME }}:${{ secrets.JRMA_PASSWORD }}@deploy.justrunmy.app/${{ secrets.JRMA_APP_NAME }}.git" main:master
+          # Directly pushes HEAD to your deploy branch using your single secret URL
+          git push --force "${{ secrets.JRMA_DEPLOY_URL }}" HEAD:deploy
