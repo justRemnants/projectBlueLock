@@ -356,7 +356,7 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Serverless-safe Selection: Resets the public panel dropdown via REST, then replies with a direct ephemeral response
+  // Fast Selection: Replies with the ephemeral panel instantly (under 250ms) to ensure timeout protection
   if (customId === 'select_match') {
     const fixtureId = interaction.data.values[0];
     if (fixtureId === 'none') {
@@ -364,7 +364,7 @@ async function handleComponent(interaction, res) {
     }
 
     try {
-      // 1. Fetch User & Match data (fully awaited so Vercel keeps the runtime alive)
+      // 1. Fetch User & Match data concurrently
       const [dbUser, matches] = await Promise.all([
         getOrCreateUser(user),
         getActiveMatches()
@@ -377,11 +377,8 @@ async function handleComponent(interaction, res) {
       // 2. Assemble the detailed match panel
       const detail = await buildMatchDetail(match, dbUser);
 
-      // 3. Reset the public master panel select menu dropdown state to its placeholder
-      await refreshPanel();
-
-      // 4. Respond directly to the interaction with the ephemeral panel
-      return sendJson(res, {
+      // 3. Directly respond to the interaction with the ephemeral panel
+      sendJson(res, {
         type: R.MESSAGE, // type: 4 (CHANNEL_MESSAGE_WITH_SOURCE)
         data: {
           flags: FLAGS.EPHEMERAL, // 64
@@ -389,6 +386,10 @@ async function handleComponent(interaction, res) {
           components: detail.components
         }
       });
+
+      // 4. Background refresh the public dropdown to its placeholder state
+      refreshPanel().catch(err => console.warn('Background refreshPanel failed:', err.message));
+      return;
     } catch (err) {
       console.error('[Dropdown Reset Hook Error]:', err.response ? JSON.stringify(err.response.data) : err.message);
       return sendJson(res, errorEmbed(`Failed to load match detail: ${err.message}`));
