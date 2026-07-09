@@ -1,0 +1,17 @@
+{
+  "name": "project-bluelock-root",
+  "version": "1.0.0",
+  "description": "Project Blue-Lock World Cup 2026 Virtual Pool - Root Workspace",
+  "main": "bot/index.js",
+  "scripts": {
+    "start": "node bot/index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.8",
+    "axios": "^1.6.8",
+    "discord-interactions": "^4.1.1",
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}
