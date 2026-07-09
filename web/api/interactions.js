@@ -2,8 +2,8 @@
  * web/api/interactions.js
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
- * Optimized for direct execution on JustRunMy.App (JRMA) with standard Webhook fallbacks.
- * Upgraded with buffer-safe stream processing, Syndicate validations, and Golden Ticket toggle mechanics.
+ * Streamlined for direct high-performance execution on both JRMA and Vercel.
+ * Upgraded with buffer-safe stream processing, manual Syndicate validations, and 3-stage Golden Ticket toggles.
  */
 
 require('dotenv').config();
@@ -942,16 +942,7 @@ async function handler(req, res) {
     return;
   }
 
-  // FAILOVER ROUTER: If executed on Vercel, attempt to delegate processing to the persistent JRMA container first
-  const isVercel = process.env.VERCEL === '1';
-  if (isVercel) {
-    const jrmaResponse = await tryForwardToJRMA(rawBody, req.headers);
-    if (jrmaResponse) {
-      return sendJson(res, jrmaResponse); // Handled by JRMA!
-    }
-  }
-
-  // LOCAL HANDLER FALLBACK: Executed directly if on JRMA, or as Vercel local fallback
+  // LOCAL DIRECT ROUTING FOR BOTH VERCEL AND JRMA: Fast, stateless local executions
   const interaction = JSON.parse(rawBody.toString('utf-8'));
 
   if (interaction.type === T.PING) {
