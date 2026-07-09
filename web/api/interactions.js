@@ -356,7 +356,7 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Serverless-safe Reset: Await database queries and dispatch follow-up before sending the HTTP response
+  // Serverless-safe Selection: Resets the public panel dropdown via REST, then replies with a direct ephemeral response
   if (customId === 'select_match') {
     const fixtureId = interaction.data.values[0];
     if (fixtureId === 'none') {
@@ -364,7 +364,7 @@ async function handleComponent(interaction, res) {
     }
 
     try {
-      // 1. Fetch User & Match data first (awaited fully so Vercel doesn't freeze the container)
+      // 1. Fetch User & Match data (fully awaited so Vercel keeps the runtime alive)
       const [dbUser, matches] = await Promise.all([
         getOrCreateUser(user),
         getActiveMatches()
@@ -374,26 +374,19 @@ async function handleComponent(interaction, res) {
         return sendJson(res, errorEmbed('The selected match could not be found.'));
       }
 
-      // 2. Assemble and build the ephemeral detailed card
+      // 2. Assemble the detailed match panel
       const detail = await buildMatchDetail(match, dbUser);
 
-      // 3. Dispatch detailed card via Discord Webhook prior to terminating the request
-      await axios.post(
-        `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`,
-        {
-          embeds: detail.embeds,
-          components: detail.components,
-          flags: FLAGS.EPHEMERAL
-        },
-        { timeout: 8000 }
-      );
+      // 3. Reset the public master panel select menu dropdown state to its placeholder
+      await refreshPanel();
 
-      // 4. Finally, update the original panel message to reset the select dropdown state
+      // 4. Respond directly to the interaction with the ephemeral panel
       return sendJson(res, {
-        type: R.UPDATE_MESSAGE,
+        type: R.MESSAGE, // type: 4 (CHANNEL_MESSAGE_WITH_SOURCE)
         data: {
-          embeds: interaction.message.embeds,
-          components: interaction.message.components
+          flags: FLAGS.EPHEMERAL, // 64
+          embeds: detail.embeds,
+          components: detail.components
         }
       });
     } catch (err) {
