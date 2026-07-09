@@ -91,13 +91,28 @@ async function buildLeaderboardEmbed() {
 
   if (error || !users) throw new Error('Failed to retrieve standings.');
 
+  // Batch-fetch all class keys and streaks in parallel to avoid N+1 sequential DB round-trips
+  const discordIds = users.map(u => u.discord_id);
+  const classKeys = discordIds.map(id => `class:${id}`);
+
+  const [classRows, streakResults] = await Promise.all([
+    supabase.from('system_config').select('key, value').in('key', classKeys),
+    Promise.all(discordIds.map(id => getUserStreak(id)))
+  ]);
+
+  const classMap = {};
+  for (const row of (classRows.data || [])) {
+    const id = row.key.replace('class:', '');
+    classMap[id] = row.value || 'None';
+  }
+
   const lines = [];
   for (let i = 0; i < users.length; i++) {
     const u = users[i];
     const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `\`#${i+1}\``;
     const name = u.display_name || u.username;
-    const uClass = await getConfigValue(`class:${u.discord_id}`) || 'None';
-    const streak = await getUserStreak(u.discord_id);
+    const uClass = (classMap[u.discord_id] || 'None');
+    const streak = streakResults[i] || 0;
     const streakIndicator = streak >= 2 ? ` 🔥 x${streak}` : '';
     lines.push(`${medal} **${name}** (${uClass.toUpperCase()}${streakIndicator}) · \`${fmt(u.tokens_balance)} tokens\``);
   }
@@ -790,14 +805,16 @@ async function handleComponent(interaction, res) {
         const next = bet.data.team_picked === 'home' ? 'away' : 'home';
         await supabase.from('bets').update({ team_picked: next }).eq('user_id', user.id).eq('fixture_id', fixtureId);
         
-        await refreshPanel();
-        return sendJson(res, {
+        // Respond to Discord first to stay within 3-second deadline, then refresh panel in background
+        sendJson(res, {
           type: R.MESSAGE,
           data: {
             flags: FLAGS.EPHEMERAL,
             content: `🔄  **Exploit Completed!** Your active wager has been completely shifted to: **${next.toUpperCase()}**.`
           }
         });
+        refreshPanel().catch(e => console.warn('[BG Panel Refresh Error - pivot]:', e.message));
+        return;
       }
 
       if (chosenCheat === 'ghost') {
@@ -868,11 +885,13 @@ async function handleComponent(interaction, res) {
         console.warn('Could not DM user sabotage notice:', dmErr.message);
       }
 
-      await refreshPanel();
-      return sendJson(res, {
+      // Respond to Discord first to stay within 3-second deadline, then refresh panel in background
+      sendJson(res, {
         type: R.MESSAGE,
         data: { flags: FLAGS.EPHEMERAL, content: `💥  **Sabotage active.** Target bet shifted by ${change} tokens.` }
       });
+      refreshPanel().catch(e => console.warn('[BG Panel Refresh Error - sabotage]:', e.message));
+      return;
     } catch (err) {
       return sendJson(res, errorEmbed(err.message));
     }
@@ -916,8 +935,7 @@ async function handleModal(interaction, res) {
       const matches = await getActiveMatches();
       const match = matches.find(m => m.fixture_id === fixtureId);
 
-      await refreshPanel();
-
+      // Respond to Discord first to stay within 3-second deadline, then refresh panel in background
       sendJson(res, {
         type: R.MESSAGE,
         data: {
@@ -932,6 +950,7 @@ async function handleModal(interaction, res) {
           })]
         }
       });
+      refreshPanel().catch(e => console.warn('[BG Panel Refresh Error - wager]:', e.message));
     } catch (err) {
       return sendJson(res, errorEmbed(err.message));
     }
