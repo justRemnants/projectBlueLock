@@ -55,7 +55,7 @@ function progressBar(percent, length = 6) {
 function formatSpyLine(flag, label, percent, tokens, barLength = 6) {
   const shortName = shortenTeamName(label);
   const bar = progressBar(percent, barLength);
-  const nameStr = shortName.padEnd(11, ' ');
+  const nameStr = shortName.padEnd(11, ' '); // Align names to 11 character width
   const percentStr = String(percent).padStart(3) + '%';
   const tokenStr = fmt(tokens) + '🪙';
   
@@ -101,6 +101,32 @@ function getWorldCupDay(kickoffStr) {
   const startParsed = new Date(startStr);
   const kickoffParsed = new Date(kickoffStrNY);
   return Math.ceil(Math.abs(kickoffParsed - startParsed) / msInDay) + 1;
+}
+
+/**
+ * REST integration modal payload builder
+ */
+function modal({ customId, title, inputs }) {
+  return {
+    type: 9,
+    data: {
+      custom_id: customId,
+      title: title,
+      components: inputs.map(input => ({
+        type: 1,
+        components: [{
+          type: 4,
+          custom_id: input.customId,
+          label: input.label,
+          style: 1,
+          placeholder: input.placeholder,
+          min_length: input.minLength,
+          max_length: input.maxLength,
+          required: true
+        }]
+      }))
+    }
+  };
 }
 
 async function buildMasterPanel() {
