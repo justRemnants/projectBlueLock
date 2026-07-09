@@ -2,8 +2,8 @@
  * web/api/interactions.js
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
- * Optimized for local execution on Vercel with dual support for both cached and new command names.
- * Upgraded with buffer-safe stream processing, manual Syndicate validations, and 3-stage Golden Ticket toggles.
+ * Upgraded with a self-healing dual-host router, buffer-safe body parser to prevent hangs,
+ * manual co-op partner validation, 3-stage Golden Ticket toggles, and Nuclear Mode limits (Uncapped max wagers).
  */
 
 require('dotenv').config();
@@ -131,7 +131,6 @@ async function handleCommand(interaction, res) {
   const user = interaction.member?.user || interaction.user;
   const channelId = interaction.channel_id;
 
-  // Modified: Supports both old 'setup-panel' and new 'panel' command triggers
   if (name === 'panel' || name === 'setup-panel') {
     try {
       const panelData = await buildMasterPanel();
@@ -150,7 +149,6 @@ async function handleCommand(interaction, res) {
     }
   }
 
-  // Modified: Supports both old 'sync-matches' and new 'sync' command triggers
   if (name === 'sync' || name === 'sync-matches') {
     const useMock = interaction.data.options?.find(o => o.name === 'mock')?.value ?? false;
     try {
@@ -384,6 +382,7 @@ async function handleComponent(interaction, res) {
     const fixtureId = customId.split(':')[1];
     const prediction = interaction.data.values[0];
 
+    // Added: Support for Nuclear Mode Minimum Wager Limits in the modal inputs
     return sendJson(
       res,
       modal({
@@ -391,7 +390,7 @@ async function handleComponent(interaction, res) {
         title: 'Place Your Wager',
         inputs: [{
           customId: 'wager_amount',
-          label: 'Token amount (enter 0 for a Free Vote)',
+          label: 'Wager amount (Minimum 50 tokens)',
           placeholder: 'e.g. 150',
           minLength: 1,
           maxLength: 6
@@ -474,6 +473,13 @@ async function handleComponent(interaction, res) {
                        '• Cost: `30 tokens` (`15` for Investigators).\n' +
                        '• **Success:** Target is fined **30 tokens**, and you win **75 + cost tokens** as a bounty!\n' +
                        '• **Failure:** If the target is innocent, they receive 10 tokens.'
+              },
+              {
+                name: '☢️  NUCLEAR MODE PROTOCOLS',
+                value: '• **No Free Votes:** Free (0-token) predictions are completely disabled.\n' +
+                       '• **Minimum Bet:** The minimum allowed wager is **50 tokens**.\n' +
+                       '• **Uncapped Wagers:** The standard 30% wealth cap and 300 token limit are **completely deactivated**! Bet up to your entire wallet balance.\n' +
+                       '• **Pool Share Restriction:** Correct predictions on wagers under 100 tokens (50-99) only return your bet back plus your flat base reward, with **0% share of the winning dividend pool**.'
               }
             ],
             footer: { text: 'Something /top-secret is going on...' }
@@ -878,8 +884,9 @@ async function handleModal(interaction, res) {
     const amountStr = interaction.data.components[0].components[0].value;
     const amountWagered = parseInt(amountStr, 10);
 
-    if (isNaN(amountWagered) || amountWagered < 0) {
-      return sendJson(res, errorEmbed('Invalid amount. Enter a whole number ≥ 0.'));
+    // Modified: Nuclear Mode modal validation. Excludes Free Votes (0) and enforces minimum 50 tokens
+    if (isNaN(amountWagered) || amountWagered < 50) {
+      return sendJson(res, errorEmbed('Wager declined! **Nuclear Mode is active.** The minimum allowed wager is **50 tokens**, and Free Votes (0 tokens) are disabled.'));
     }
 
     try {

@@ -3,7 +3,7 @@
  *
  * Rate-limit aware sync service configured for Football-Data.org v4 API.
  * Refactored to support Syndicate profit bonuses, Syndicate loss token fees,
- * Tank insurance payouts, and automated DM settlements.
+ * Tank insurance payouts, and automated Nuclear Mode payouts (No pool share on wagers under 100).
  */
 
 require('dotenv').config();
@@ -98,7 +98,7 @@ async function settleMatch(fixtureId, apiMatch) {
     let isRefund = false;
     let isWinner = false;
 
-    const baseReward = b.amount_wagered === 0 ? 5 : Math.round(b.amount_wagered * 0.20);
+    const baseReward = Math.round(b.amount_wagered * 0.20);
     const userClass = await getConfigValue(`class:${b.user_id}`);
 
     if (winner === 'draw') {
@@ -112,13 +112,15 @@ async function settleMatch(fixtureId, apiMatch) {
     } else {
       if (b.team_picked === winner) {
         isWinner = true;
-        if (b.amount_wagered === 0) {
-          payout = 5;
+        
+        // Nuclear Mode: Bets under 100 get exactly wager + base reward back. No dynamic pool dividend split!
+        if (b.amount_wagered < 100) {
+          payout = b.amount_wagered + baseReward;
         } else {
           payout = Math.round((boostedPool / winningTokens) * b.amount_wagered) + baseReward;
         }
 
-        // Apply Syndicate class bonus: +15% more winnings
+        // Apply Syndicate class bonus: +15% more winnings on top of net profits
         if (userClass === 'syndicate' && b.amount_wagered > 0) {
           const netWinnings = payout - b.amount_wagered;
           payout = b.amount_wagered + Math.round(netWinnings * 1.15);
@@ -146,7 +148,7 @@ async function settleMatch(fixtureId, apiMatch) {
     // Send DM
     const embedColor = isRefund ? COLORS.blue : isWinner ? COLORS.green : COLORS.red;
     const outcomeTitle = isRefund ? '↩️ Match Refunded' : isWinner ? '🎉 Prediction Correct!' : '❌ Prediction Incorrect';
-    const displayWager = b.amount_wagered === 0 ? 'Free Vote' : `${fmt(b.amount_wagered)} tokens`;
+    const displayWager = `${fmt(b.amount_wagered)} tokens`;
 
     const netChange = payout - b.amount_wagered;
     const netChangeStr = isRefund

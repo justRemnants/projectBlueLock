@@ -293,12 +293,6 @@ async function buildMatchDetail(match, dbUser) {
 
   const unixTs = Math.floor(new Date(match.kickoff_time).getTime() / 1000);
 
-  const history = await getUserHistory(dbUser.discord_id);
-  const activeBets = history.filter(b => !b.settled);
-  const totalActiveWagered = activeBets.reduce((sum, b) => sum + b.amount_wagered, 0);
-  const totalWealth = dbUser.tokens_balance + totalActiveWagered;
-  const maxBet = Math.min(Math.floor(totalWealth * 0.30), 300);
-
   const homeFlag = getFlag(match.home_team);
   const awayFlag = getFlag(match.away_team);
 
@@ -326,8 +320,9 @@ async function buildMatchDetail(match, dbUser) {
         inline: true
       },
       {
+        // Modified: Removed standard maximum calculations to represent uncapped Nuclear Mode limit
         name: '🛡️ Max Bet Allowed',
-        value: `\`${fmt(maxBet)} tokens\`\n*(30% of total wealth)*`,
+        value: `\`Unlimited\`\n*(Nuclear Mode Active)*`,
         inline: true
       },
       {

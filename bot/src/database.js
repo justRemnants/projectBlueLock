@@ -123,13 +123,23 @@ function getMultiplier(voteShare) {
   return 1.20;
 }
 
+/**
+ * Calculates projected earnings with Nuclear Mode filters (No pool dividends for bets < 100)
+ */
 async function calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, userId = null) {
+  if (amountWagered < 50) {
+    return { estimated: 0, multiplier: 1.0, voteShare: 0, isFreeVote: false };
+  }
+
+  const baseReward = Math.round(amountWagered * 0.20);
+
+  // Nuclear Mode: Bets under 100 tokens receive only their wager + base reward back (no pool dividends)
+  if (amountWagered < 100) {
+    return { estimated: amountWagered + baseReward, multiplier: 1.0, voteShare: 0, isFreeVote: false };
+  }
+
   const bets = await getBetsForFixture(fixtureId);
   const otherBets = userId ? bets.filter(b => b.user_id !== userId) : bets;
-
-  if (amountWagered === 0) {
-    return { estimated: 5, multiplier: 1.0, voteShare: 0, isFreeVote: true };
-  }
 
   let totalPool = amountWagered;
   let winningTokens = amountWagered;
@@ -145,7 +155,6 @@ async function calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, 
   }
 
   const boostedPool = totalPool * multiplier;
-  const baseReward = amountWagered < 20 ? 5 : 20;
 
   const estimated = winningTokens > 0 
     ? Math.round((boostedPool / winningTokens) * amountWagered) + baseReward
