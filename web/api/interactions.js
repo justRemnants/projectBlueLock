@@ -2,7 +2,7 @@
  * web/api/interactions.js
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
- * Streamlined for direct high-performance execution on both JRMA and Vercel.
+ * Optimized for local execution on Vercel with dual support for both cached and new command names.
  * Upgraded with buffer-safe stream processing, manual Syndicate validations, and 3-stage Golden Ticket toggles.
  */
 
@@ -131,7 +131,8 @@ async function handleCommand(interaction, res) {
   const user = interaction.member?.user || interaction.user;
   const channelId = interaction.channel_id;
 
-  if (name === 'setup-panel') {
+  // Modified: Supports both old 'setup-panel' and new 'panel' command triggers
+  if (name === 'panel' || name === 'setup-panel') {
     try {
       const panelData = await buildMasterPanel();
       const response = await axios.post(
@@ -149,7 +150,8 @@ async function handleCommand(interaction, res) {
     }
   }
 
-  if (name === 'sync') {
+  // Modified: Supports both old 'sync-matches' and new 'sync' command triggers
+  if (name === 'sync' || name === 'sync-matches') {
     const useMock = interaction.data.options?.find(o => o.name === 'mock')?.value ?? false;
     try {
       const result = useMock ? await syncMockFixtures() : await syncFixtures();
