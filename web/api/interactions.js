@@ -356,44 +356,56 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Fast Selection: Replies with the ephemeral panel instantly (under 250ms) to ensure timeout protection
+  // Two-Step Selection: Acknowledges interaction instantly to beat 3s timeout, 
+  // waits 600ms to bypass Discord Webhook race condition, then sends data.
   if (customId === 'select_match') {
     const fixtureId = interaction.data.values[0];
     if (fixtureId === 'none') {
       return sendJson(res, { type: R.DEFERRED_UPDATE });
     }
 
+    // 1. Instantly respond with Type 7 (UPDATE_MESSAGE). 
+    // Passing the same components clears the selected value on the user's screen.
+    sendJson(res, {
+      type: R.UPDATE_MESSAGE,
+      data: {
+        embeds: interaction.message.embeds,
+        components: interaction.message.components
+      }
+    });
+
     try {
-      // 1. Fetch User & Match data concurrently
+      // 2. Introduce a deliberate 600ms delay.
+      // This guarantees Discord's internal systems fully process the HTTP response 
+      // above BEFORE we hit the Followup Webhook, eliminating Error 10015.
+      await new Promise(resolve => setTimeout(resolve, 600));
+
+      // 3. Fetch User & Match data concurrently
       const [dbUser, matches] = await Promise.all([
         getOrCreateUser(user),
         getActiveMatches()
       ]);
       const match = matches.find(m => m.fixture_id === fixtureId);
-      if (!match) {
-        return sendJson(res, errorEmbed('The selected match could not be found.'));
-      }
+      if (!match) return;
 
-      // 2. Assemble the detailed match panel
       const detail = await buildMatchDetail(match, dbUser);
 
-      // 3. Directly respond to the interaction with the ephemeral panel
-      sendJson(res, {
-        type: R.MESSAGE, // type: 4 (CHANNEL_MESSAGE_WITH_SOURCE)
-        data: {
-          flags: FLAGS.EPHEMERAL, // 64
+      // 4. Dispatch the ephemeral match card via Followup Webhook
+      await axios.post(
+        `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`,
+        {
           embeds: detail.embeds,
-          components: detail.components
-        }
-      });
-
-      // 4. Background refresh the public dropdown to its placeholder state
-      refreshPanel().catch(err => console.warn('Background refreshPanel failed:', err.message));
-      return;
+          components: detail.components,
+          flags: FLAGS.EPHEMERAL
+        },
+        { timeout: 8000 }
+      );
     } catch (err) {
-      console.error('[Dropdown Reset Hook Error]:', err.response ? JSON.stringify(err.response.data) : err.message);
-      return sendJson(res, errorEmbed(`Failed to load match detail: ${err.message}`));
+      console.error('[Select Match Followup Error]:', err.response ? JSON.stringify(err.response.data) : err.message);
     }
+    
+    // 5. Ensure Vercel closes the function gracefully
+    return;
   }
 
   if (customId.startsWith('select_prediction:')) {
@@ -803,7 +815,6 @@ async function handleComponent(interaction, res) {
         const next = bet.data.team_picked === 'home' ? 'away' : 'home';
         await supabase.from('bets').update({ team_picked: next }).eq('user_id', user.id).eq('fixture_id', fixtureId);
         
-        // Await public panel rebuild fully so Vercel doesn't cut execution
         await refreshPanel();
 
         return sendJson(res, {
@@ -833,7 +844,6 @@ async function handleComponent(interaction, res) {
           }
         }
 
-        // Await public panel rebuild fully so Vercel doesn't cut execution
         await refreshPanel();
 
         return sendJson(res, {
@@ -887,7 +897,6 @@ async function handleComponent(interaction, res) {
         console.warn('Could not DM user sabotage notice:', dmErr.message);
       }
 
-      // Await public panel rebuild fully so Vercel doesn't cut execution
       await refreshPanel();
 
       return sendJson(res, {
@@ -937,7 +946,6 @@ async function handleModal(interaction, res) {
       const matches = await getActiveMatches();
       const match = matches.find(m => m.fixture_id === fixtureId);
 
-      // Await public panel rebuild fully so Vercel doesn't cut execution
       await refreshPanel();
 
       return sendJson(res, {
