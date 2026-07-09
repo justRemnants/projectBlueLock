@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main # Automatically deploys when you push commits to the main branch
+  workflow_dispatch: # Enables manual execution button in the GitHub Actions dashboard
 
 jobs:
   deploy:
@@ -18,5 +19,5 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          # Directly pushes HEAD to your deploy branch using your single secret URL
-          git push --force "${{ secrets.JRMA_DEPLOY_URL }}" HEAD:deploy
+          # Executes your exact upstream push command using the stored secret URL
+          git push -u "${{ secrets.JRMA_DEPLOY_URL }}" HEAD:deploy
