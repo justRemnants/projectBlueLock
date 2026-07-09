@@ -2,8 +2,8 @@
  * web/api/interactions.js
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
- * Upgraded with a self-healing dual-host router, buffer-safe body parser to prevent hangs,
- * manual co-op partner validation, 3-stage Golden Ticket toggles, and Nuclear Mode limits (Uncapped max wagers).
+ * Optimized for direct local execution on Vercel with zero database overhead on component updates.
+ * Upgraded with buffer-safe stream processing, manual Syndicate validations, and 3-stage Golden Ticket toggles.
  */
 
 require('dotenv').config();
@@ -341,6 +341,7 @@ async function handleComponent(interaction, res) {
     }
   }
 
+  // Elite 0ms Reset: Instantly reset select menu using pre-packaged payload elements with NO Supabase database lag
   if (customId === 'select_match') {
     const fixtureId = interaction.data.values[0];
     if (fixtureId === 'none') {
@@ -348,20 +349,24 @@ async function handleComponent(interaction, res) {
     }
 
     try {
-      const dbUser = await getOrCreateUser(user);
-      const matches = await getActiveMatches();
-      const match = matches.find(m => m.fixture_id === fixtureId);
-      if (!match) return sendJson(res, errorEmbed('Match not found.'));
-
-      const panelReset = await buildMasterPanel();
+      // 1. Instantly update panel message in 0ms using the original data schema
       sendJson(res, {
         type: R.UPDATE_MESSAGE,
         data: {
-          embeds: panelReset.embeds,
-          components: panelReset.components
+          embeds: interaction.message.embeds,
+          components: interaction.message.components
         }
       });
 
+      // 2. Fetch User & Match data inside background async context
+      const [dbUser, matches] = await Promise.all([
+        getOrCreateUser(user),
+        getActiveMatches()
+      ]);
+      const match = matches.find(m => m.fixture_id === fixtureId);
+      if (!match) return;
+
+      // 3. Assemble and dispatch ephemeral detailed card
       const detail = await buildMatchDetail(match, dbUser);
       await axios.post(
         `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`,
@@ -382,7 +387,6 @@ async function handleComponent(interaction, res) {
     const fixtureId = customId.split(':')[1];
     const prediction = interaction.data.values[0];
 
-    // Added: Support for Nuclear Mode Minimum Wager Limits in the modal inputs
     return sendJson(
       res,
       modal({
