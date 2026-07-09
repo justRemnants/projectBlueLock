@@ -1,5 +1,5 @@
-# Use a secure, lightweight Node.js LTS image
-FROM node:20-alpine
+# Upgrade to Node.js 22 LTS to enable out-of-the-box native WebSocket support
+FROM node:22-alpine
 
 # Set working directory inside the container
 WORKDIR /app
