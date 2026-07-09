@@ -356,7 +356,7 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Elite 0ms Reset: Instantly reset select menu using pre-packaged payload elements with NO Supabase database lag
+  // Serverless-safe Reset: Await database queries and dispatch follow-up before sending the HTTP response
   if (customId === 'select_match') {
     const fixtureId = interaction.data.values[0];
     if (fixtureId === 'none') {
@@ -364,25 +364,20 @@ async function handleComponent(interaction, res) {
     }
 
     try {
-      // 1. Instantly update panel message in 0ms using the original data schema
-      sendJson(res, {
-        type: R.UPDATE_MESSAGE,
-        data: {
-          embeds: interaction.message.embeds,
-          components: interaction.message.components
-        }
-      });
-
-      // 2. Fetch User & Match data inside background async context
+      // 1. Fetch User & Match data first (awaited fully so Vercel doesn't freeze the container)
       const [dbUser, matches] = await Promise.all([
         getOrCreateUser(user),
         getActiveMatches()
       ]);
       const match = matches.find(m => m.fixture_id === fixtureId);
-      if (!match) return;
+      if (!match) {
+        return sendJson(res, errorEmbed('The selected match could not be found.'));
+      }
 
-      // 3. Assemble and dispatch ephemeral detailed card
+      // 2. Assemble and build the ephemeral detailed card
       const detail = await buildMatchDetail(match, dbUser);
+
+      // 3. Dispatch detailed card via Discord Webhook prior to terminating the request
       await axios.post(
         `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`,
         {
@@ -392,8 +387,18 @@ async function handleComponent(interaction, res) {
         },
         { timeout: 8000 }
       );
+
+      // 4. Finally, update the original panel message to reset the select dropdown state
+      return sendJson(res, {
+        type: R.UPDATE_MESSAGE,
+        data: {
+          embeds: interaction.message.embeds,
+          components: interaction.message.components
+        }
+      });
     } catch (err) {
       console.error('[Dropdown Reset Hook Error]:', err.response ? JSON.stringify(err.response.data) : err.message);
+      return sendJson(res, errorEmbed(`Failed to load match detail: ${err.message}`));
     }
   }
 
@@ -512,7 +517,7 @@ async function handleComponent(interaction, res) {
     try {
       if (chosenClass === 'syndicate') {
         const partner = await getConfigValue(`partner:${user.id}`);
-        if (!partner || partner === 'pending') {
+        if (!partner || partner === 'pending' || partner === 'Unlinked') {
           return sendJson(res, errorEmbed(
             "❌  **Selection Blocked!**\n\n" +
             "To select the Syndicate class, you must first establish a mutual co-op link with another player.\n\n" +
@@ -804,16 +809,16 @@ async function handleComponent(interaction, res) {
         const next = bet.data.team_picked === 'home' ? 'away' : 'home';
         await supabase.from('bets').update({ team_picked: next }).eq('user_id', user.id).eq('fixture_id', fixtureId);
         
-        // Respond to Discord first to stay within 3-second deadline, then refresh panel in background
-        sendJson(res, {
+        // Await public panel rebuild fully so Vercel doesn't cut execution
+        await refreshPanel();
+
+        return sendJson(res, {
           type: R.MESSAGE,
           data: {
             flags: FLAGS.EPHEMERAL,
             content: `🔄  **Exploit Completed!** Your active wager has been completely shifted to: **${next.toUpperCase()}**.`
           }
         });
-        refreshPanel().catch(e => console.warn('[BG Panel Refresh Error - pivot]:', e.message));
-        return;
       }
 
       if (chosenCheat === 'ghost') {
@@ -833,6 +838,10 @@ async function handleComponent(interaction, res) {
             }, { headers: { Authorization: `Bot ${BOT_TOKEN}` } });
           }
         }
+
+        // Await public panel rebuild fully so Vercel doesn't cut execution
+        await refreshPanel();
+
         return sendJson(res, {
           type: R.MESSAGE,
           data: {
@@ -884,13 +893,13 @@ async function handleComponent(interaction, res) {
         console.warn('Could not DM user sabotage notice:', dmErr.message);
       }
 
-      // Respond to Discord first to stay within 3-second deadline, then refresh panel in background
-      sendJson(res, {
+      // Await public panel rebuild fully so Vercel doesn't cut execution
+      await refreshPanel();
+
+      return sendJson(res, {
         type: R.MESSAGE,
         data: { flags: FLAGS.EPHEMERAL, content: `💥  **Sabotage active.** Target bet shifted by ${change} tokens.` }
       });
-      refreshPanel().catch(e => console.warn('[BG Panel Refresh Error - sabotage]:', e.message));
-      return;
     } catch (err) {
       return sendJson(res, errorEmbed(err.message));
     }
@@ -906,7 +915,7 @@ async function handleModal(interaction, res) {
     const amountStr = interaction.data.components[0].components[0].value;
     const amountWagered = parseInt(amountStr, 10);
 
-    // Modified: Nuclear Mode modal validation. Excludes Free Votes (0) and enforces minimum 50 tokens
+    // Modal verification
     if (isNaN(amountWagered) || amountWagered < 50) {
       return sendJson(res, errorEmbed('Wager declined! **Nuclear Mode is active.** The minimum allowed wager is **50 tokens**, and Free Votes (0 tokens) are disabled.'));
     }
@@ -934,8 +943,10 @@ async function handleModal(interaction, res) {
       const matches = await getActiveMatches();
       const match = matches.find(m => m.fixture_id === fixtureId);
 
-      // Respond to Discord first to stay within 3-second deadline, then refresh panel in background
-      sendJson(res, {
+      // Await public panel rebuild fully so Vercel doesn't cut execution
+      await refreshPanel();
+
+      return sendJson(res, {
         type: R.MESSAGE,
         data: {
           flags: FLAGS.EPHEMERAL,
@@ -949,7 +960,6 @@ async function handleModal(interaction, res) {
           })]
         }
       });
-      refreshPanel().catch(e => console.warn('[BG Panel Refresh Error - wager]:', e.message));
     } catch (err) {
       return sendJson(res, errorEmbed(err.message));
     }
@@ -973,7 +983,6 @@ async function handler(req, res) {
     return;
   }
 
-  // LOCAL DIRECT ROUTING FOR BOTH VERCEL AND JRMA: Fast, stateless local executions
   const interaction = JSON.parse(rawBody.toString('utf-8'));
 
   if (interaction.type === T.PING) {
