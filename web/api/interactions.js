@@ -2,9 +2,8 @@
  * web/api/interactions.js
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
- * Upgraded with a self-healing dual-host router, buffer-safe body parser to prevent hangs,
- * manual co-op partner validation, 3-stage Golden Ticket toggles, and safe 1800ms ping limits
- * alongside a diagnostic latency testing module.
+ * Optimized for direct execution on JustRunMy.App (JRMA) with standard Webhook fallbacks.
+ * Upgraded with buffer-safe stream processing, Syndicate validations, and Golden Ticket toggle mechanics.
  */
 
 require('dotenv').config();
@@ -26,9 +25,6 @@ const {
 const PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY;
 const BOT_TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_CLIENT_ID;
-
-// Configure your production JRMA server address for automated failover
-const JRMA_URL = 'https://r-ab3r9k2.justrunmy.app';
 
 function sendJson(res, data, statusCode = 200) {
   res.statusCode = statusCode;
@@ -52,37 +48,6 @@ function getRawBody(req) {
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
-}
-
-/**
- * Pings JRMA with a safe 1800ms timeout.
- * If JRMA has not responded in 1800ms, it is sleeping, so Vercel aborts and triggers local fallback.
- */
-async function tryForwardToJRMA(rawBody, headers) {
-  const start = Date.now();
-  try {
-    const response = await axios.post(`${JRMA_URL}/api/interactions`, rawBody, {
-      headers: {
-        'x-signature-ed25519': headers['x-signature-ed25519'],
-        'x-signature-timestamp': headers['x-signature-timestamp'],
-        'content-type': 'application/json'
-      },
-      timeout: 1800 // Calibrated to 1.8 seconds to avoid false fallbacks while preserving fallback runway
-    });
-    
-    // Add transit diagnostic time if it is a ping request
-    if (response.data && response.data.data && response.data.data.embeds && response.data.data.embeds[0]) {
-      const duration = Date.now() - start;
-      const desc = response.data.data.embeds[0].description;
-      if (desc && desc.includes('[PROXY_HINT]')) {
-        response.data.data.embeds[0].description = desc.replace('[PROXY_HINT]', `🛰️  **Vercel-to-JRMA Forwarding Transit:** \`${duration}ms\``);
-      }
-    }
-    return response.data;
-  } catch (err) {
-    console.warn('[Failover System Alert] JRMA is offline or sleeping. Executing local Vercel fallback...');
-    return null;
-  }
 }
 
 async function editChannelMessage(channelId, messageId, data) {
@@ -166,7 +131,7 @@ async function handleCommand(interaction, res) {
   const user = interaction.member?.user || interaction.user;
   const channelId = interaction.channel_id;
 
-  if (name === 'panel') {
+  if (name === 'setup-panel') {
     try {
       const panelData = await buildMasterPanel();
       const response = await axios.post(
@@ -323,8 +288,7 @@ async function handleCommand(interaction, res) {
             color: COLORS.green,
             title: '🏓  Routing Pong Diagnostics',
             description: `⚡  **Active Webhook Host:** \`${hostText}\`\n` +
-                        `🗄️  **Supabase Database Ping:** \`${dbDuration}ms\`\n` +
-                        `[PROXY_HINT]`
+                        `**Supabase Connection Database Ping:** \`${dbDuration}ms\``
           }]
         }
       });
