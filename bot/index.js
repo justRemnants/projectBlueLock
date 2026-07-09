@@ -10,7 +10,6 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, Partials, ActivityType } = require('discord.js');
 const express = require('express');
 
-// Relative paths configured to target source files in the web workspace
 const { syncFixtures } = require('../web/src/footballApi');
 const { buildMasterPanel, COLORS } = require('../web/src/panel');
 const { getPanelMessage, setConfigValue, getConfigValue, supabase } = require('../web/src/database');
