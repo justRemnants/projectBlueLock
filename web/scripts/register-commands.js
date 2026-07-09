@@ -17,7 +17,7 @@ const commands = [
     description: 'Post the Blue-Lock Master Events Panel in this channel.'
   },
   {
-    name: 'sync-matches',
+    name: 'sync',
     description: 'Sync World Cup 2026 fixtures from Football-Data.org.',
     options: [
       {
@@ -55,6 +55,10 @@ const commands = [
   {
     name: 'top-secret',
     description: 'Access the classified database exploit terminal and cheating logs.'
+  },
+  {
+    name: 'ping',
+    description: 'Test the real-time latency and confirm failover routing states between hosts.'
   }
 ];
 

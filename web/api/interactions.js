@@ -2,8 +2,9 @@
  * web/api/interactions.js
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
- * Upgraded to force class selection on next interaction, support the mutual Syndicate linking handshake,
- * process the new /top-secret command, handle Stage-based Golden Ticket resets, and toggle tickets off before kickoff.
+ * Upgraded with a self-healing dual-host router, buffer-safe body parser to prevent hangs,
+ * manual co-op partner validation, 3-stage Golden Ticket toggles, and tight 800ms ping limits
+ * alongside a diagnostic latency testing module.
  */
 
 require('dotenv').config();
@@ -26,19 +27,62 @@ const PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY;
 const BOT_TOKEN = process.env.DISCORD_TOKEN;
 const APP_ID = process.env.DISCORD_CLIENT_ID;
 
+// Configure your production JRMA server address for automated failover
+const JRMA_URL = 'https://r-ab3r9k2.justrunmy.app';
+
 function sendJson(res, data, statusCode = 200) {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json');
   res.end(JSON.stringify(data));
 }
 
+/**
+ * Robust raw body extractor that handles both raw streams (Vercel) and pre-buffered bodies (JRMA Express)
+ */
 function getRawBody(req) {
+  if (Buffer.isBuffer(req.body)) {
+    return Promise.resolve(req.body);
+  }
+  if (typeof req.body === 'string') {
+    return Promise.resolve(Buffer.from(req.body, 'utf-8'));
+  }
   return new Promise((resolve, reject) => {
     const chunks = [];
     req.on('data', c => chunks.push(c));
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+
+/**
+ * Pings JRMA with a tight 800ms timeout.
+ * If JRMA has not responded in 800ms, it is sleeping, so Vercel aborts and triggers local fallback.
+ */
+async function tryForwardToJRMA(rawBody, headers) {
+  const start = Date.now();
+  try {
+    const response = await axios.post(`${JRMA_URL}/api/interactions`, rawBody, {
+      headers: {
+        'x-signature-ed25519': headers['x-signature-ed25519'],
+        'x-signature-timestamp': headers['x-signature-timestamp'],
+        'content-type': 'application/json'
+      },
+      timeout: 800 // Optimized to 800ms. Cut connections early if JRMA is sleeping.
+    });
+    
+    // Add transit diagnostic time if it is a ping request
+    if (response.data && response.data.data && response.data.data.embeds && response.data.data.embeds[0]) {
+      const duration = Date.now() - start;
+      const desc = response.data.data.embeds[0].description;
+      if (desc && desc.includes('[PROXY_HINT]')) {
+        response.data.data.embeds[0].description = desc.replace('[PROXY_HINT]', `🛰️  **Vercel-to-JRMA Forwarding Transit:** \`${duration}ms\``);
+      }
+    }
+    return response.data;
+  } catch (err) {
+    console.warn('[Failover System Alert] JRMA is offline or sleeping. Executing local Vercel fallback...');
+    return null;
+  }
 }
 
 async function editChannelMessage(channelId, messageId, data) {
@@ -260,6 +304,35 @@ async function handleCommand(interaction, res) {
         }]
       }
     });
+  }
+
+  // Diagnostic ping command to audit serverless failover latency
+  if (name === 'ping') {
+    const isVercel = process.env.VERCEL === '1';
+    const hostText = isVercel ? 'Vercel Serverless' : 'JustRunMy.App (Persistent VM)';
+    const startDB = Date.now();
+    
+    try {
+      // Benchmark database ping
+      await supabase.from('system_config').select('value').eq('key', 'panel_channel_id').single();
+      const dbDuration = Date.now() - startDB;
+      
+      return sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          flags: FLAGS.EPHEMERAL,
+          embeds: [{
+            color: COLORS.green,
+            title: '🏓  Routing Pong Diagnostics',
+            description: `⚡  **Active Webhook Host:** \`${hostText}\`\n` +
+                        `🗄️  **Supabase Database Ping:** \`${dbDuration}ms\`\n` +
+                        `[PROXY_HINT]` // Replaced dynamically by proxy tracer if routed via Vercel
+          }]
+        }
+      });
+    } catch (err) {
+      return sendJson(res, errorEmbed(err.message));
+    }
   }
 }
 
@@ -492,7 +565,6 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Handle Golden Ticket Toggle Behavior (Apply / Cancel before kickoff)
   if (customId.startsWith('apply_ticket:')) {
     const fixtureId = customId.split(':')[1];
     try {
@@ -504,7 +576,6 @@ async function handleComponent(interaction, res) {
 
       const activeState = await getConfigValue(`ticket_used:${user.id}:${fixtureId}`);
       if (activeState === 'true') {
-        // Remove ticket and return to inventory
         await setConfigValue(`ticket_used:${user.id}:${fixtureId}`, '');
         return sendJson(res, {
           type: R.MESSAGE,
@@ -515,11 +586,9 @@ async function handleComponent(interaction, res) {
         });
       }
 
-      // Proceed with applying the ticket
       const userClass = await getConfigValue(`class:${user.id}`);
       const currentStage = getStage(match.kickoff_time);
 
-      // Fetch all matches to identify stages of previous ticket uses
       const rawTickets = await supabase.from('system_config').select('key').like('key', `ticket_used:${user.id}:%`);
       const activeUsedFixtureIds = (rawTickets.data || [])
         .map(t => t.key.split(':').pop())
@@ -911,6 +980,16 @@ async function handler(req, res) {
     return;
   }
 
+  // FAILOVER ROUTER: If executed on Vercel, attempt to delegate processing to the persistent JRMA container first
+  const isVercel = process.env.VERCEL === '1';
+  if (isVercel) {
+    const jrmaResponse = await tryForwardToJRMA(rawBody, req.headers);
+    if (jrmaResponse) {
+      return sendJson(res, jrmaResponse); // Handled by JRMA!
+    }
+  }
+
+  // LOCAL HANDLER FALLBACK: Executed directly if on JRMA, or as Vercel local fallback
   const interaction = JSON.parse(rawBody.toString('utf-8'));
 
   if (interaction.type === T.PING) {
