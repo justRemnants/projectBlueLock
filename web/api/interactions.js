@@ -14,7 +14,7 @@ const {
   getOrCreateUser, getActiveMatches,
   calculateEstimatedEarnings, placeBet,
   getUserHistory, savePanelMessage, getPanelMessage, supabase,
-  getConfigValue, setConfigValue, getUserStreak
+  getConfigValue, setConfigValue, getUserStreak, getSpyMetric
 } = require('../src/database');
 const { syncFixtures, syncMockFixtures, checkApiStatus } = require('../src/footballApi');
 const {

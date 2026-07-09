@@ -400,6 +400,64 @@ async function buildMatchDetail(match, dbUser) {
   return { embeds: [embed], components: [row1, row2] };
 }
 
+function buildBetConfirmEmbed({ match, teamPicked, amountWagered, estEarnings, newBalance, isUpdate }) {
+  const isFreeVote = amountWagered === 0;
+  const displayPick = teamPicked === 'home'
+    ? match.home_team.toUpperCase()
+    : teamPicked === 'away'
+      ? match.away_team.toUpperCase()
+      : 'DRAW';
+
+  const pickEmoji = { home: '⚽', draw: '🤝', away: '⚽' }[teamPicked] || '🔮';
+
+  const multiplierStr = isFreeVote
+    ? 'Free Vote'
+    : estEarnings.multiplier > 1.0
+      ? `🔥 ${estEarnings.multiplier}x Underdog Boost`
+      : `${estEarnings.multiplier}x`;
+
+  const isHomeOrAway = teamPicked === 'home' || teamPicked === 'away';
+  const refundNote = (!isFreeVote && isHomeOrAway) ? '\n*Note: If the match ends in a Draw, your wager will be fully refunded.*' : '';
+
+  return {
+    color: isFreeVote ? COLORS.purple : COLORS.green,
+    title: isUpdate ? '🔄 Prediction Updated' : '✅ Prediction Locked In',
+    description:
+      `**${match.home_team}  ⚔️  ${match.away_team}**\n` +
+      `Starts <t:${Math.floor(new Date(match.kickoff_time).getTime() / 1000)}:R>\n\u200b` +
+      refundNote,
+    fields: [
+      {
+        name: `${pickEmoji} Your Pick`,
+        value: "```\n" + displayPick + "\n```",
+        inline: true
+      },
+      {
+        name: '🪙 Wager',
+        value: "```\n" + (isFreeVote ? 'Free Vote' : fmt(amountWagered) + ' tokens') + "\n```",
+        inline: true
+      },
+      {
+        name: '📈 Est. Payout',
+        value: "```\n" + (isFreeVote ? '+5 tokens (if correct)' : fmt(estEarnings.estimated) + ' tokens') + "\n```",
+        inline: true
+      },
+      {
+        name: '⚡ Multiplier',
+        value: multiplierStr,
+        inline: true
+      },
+      {
+        name: '💰 New Balance',
+        value: `\`${fmt(newBalance)} tokens\``,
+        inline: true
+      }
+    ],
+    footer: { text: 'You can update your pick anytime before kickoff.' },
+    timestamp: new Date().toISOString()
+  };
+}
+
 async function buildProfileEmbed({ user, activeBets, pastBets }) {
   const wins = pastBets.filter(b => b.team_picked === b.matches?.winner).length;
   const refunds = pastBets.filter(b => b.matches?.winner === 'draw' && b.team_picked !== 'draw').length;
