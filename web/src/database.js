@@ -225,11 +225,7 @@ async function getPanelMessage() {
   };
 }
 
-/**
- * Automatically calculates win streaks, protecting the streak once per stage if the Oracle shield is toggled ON.
- */
-async function getUserStreak(userId, history = null) {
-  if (!history) history = await getUserHistory(userId);
+async function getSoloStreak(userId, history) {
   const settledBets = history.filter(b => b.settled);
   settledBets.sort((a, b) => new Date(a.matches?.kickoff_time) - new Date(b.matches?.kickoff_time));
 
@@ -247,16 +243,34 @@ async function getUserStreak(userId, history = null) {
     if (won) {
       streak++;
     } else if (isRefund) {
-      // Refund leaves streak unaltered
+      // Refund ignored
     } else {
       if (isOracle && shieldState === 'on' && !shieldUsedInStage) {
-        shieldUsedInStage = true; // Protects streak once
+        shieldUsedInStage = true;
       } else {
         streak = 0;
       }
     }
   }
   return streak;
+}
+
+async function getUserStreak(userId, history = null) {
+  if (!history) history = await getUserHistory(userId);
+  const userClass = await getConfigValue(`class:${userId}`);
+  
+  let currentStreak = await getSoloStreak(userId, history);
+
+  if (userClass === 'syndicate') {
+    const partnerId = await getConfigValue(`partner:${userId}`);
+    if (partnerId && partnerId !== 'pending' && partnerId !== 'Unlinked') {
+      const partnerHistory = await getUserHistory(partnerId);
+      const partnerStreak = await getSoloStreak(partnerId, partnerHistory);
+      currentStreak = Math.max(currentStreak, partnerStreak);
+    }
+  }
+  
+  return currentStreak;
 }
 
 module.exports = {

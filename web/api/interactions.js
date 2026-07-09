@@ -403,7 +403,7 @@ async function handleComponent(interaction, res) {
                 value: '```\n> 80% vote share  →  1.0x  (heavy favourite)\n50–80%           →  1.0x  (standard split)\n20–50%           →  1.10x ⬆  (mild underdog)\n< 20%            →  1.20x  🔥 (miracle jackpot)\n```'
               },
               {
-                name: '3️⃣  Faction Factions (Classes)',
+                name: '3️⃣  Classes',
                 value: '🧬 **Oracle:** Toggles Streak Shield. Win bonus is +25 tokens (+15 when shielded).\n' +
                        '🏴‍☠️ **Renegade:** Receives 2 underdog Golden Tickets (Double profit) instead of 1.\n' +
                        '🛡️ **Tank:** Automatically receive 35% insurance refund on bets >= 200 tokens. Caught cheating fines are halved.\n' +

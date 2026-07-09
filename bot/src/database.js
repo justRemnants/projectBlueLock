@@ -1,7 +1,8 @@
 /**
  * bot/src/database.js
  *
- * Database helper optimized for local gateway clients utilizing Discord.js classes.
+ * Database helpers optimized for local gateway clients.
+ * Synchronized with the web-workspace helpers for complete compatibility.
  */
 
 const { createClient } = require('@supabase/supabase-js');
@@ -11,6 +12,21 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 
 const supabase = createClient(supabaseUrl || 'https://placeholder.supabase.co', supabaseKey || 'placeholder');
+
+async function getConfigValue(key) {
+  const { data } = await supabase
+    .from('system_config')
+    .select('value')
+    .eq('key', key)
+    .single();
+  return data ? data.value : null;
+}
+
+async function setConfigValue(key, value) {
+  await supabase
+    .from('system_config')
+    .upsert({ key, value }, { onConflict: 'key' });
+}
 
 async function getOrCreateUser(discordUser) {
   const { data, error } = await supabase
@@ -25,7 +41,7 @@ async function getOrCreateUser(discordUser) {
       username: discordUser.username,
       display_name: discordUser.globalName || discordUser.username,
       avatar_url: discordUser.avatarURL() || null,
-      tokens_balance: 500 // Updated starting balance to 500
+      tokens_balance: 500
     };
     const { data: insertedData, error: insertError } = await supabase
       .from('users')
@@ -64,7 +80,6 @@ async function getActiveMatches() {
     .from('matches')
     .select('*')
     .order('kickoff_time', { ascending: true });
-
   if (error) throw error;
   return data;
 }
@@ -74,7 +89,6 @@ async function getBetsForFixture(fixtureId) {
     .from('bets')
     .select('*')
     .eq('fixture_id', fixtureId);
-
   if (error) throw error;
   return data;
 }
@@ -105,8 +119,8 @@ async function getSpyMetric(fixtureId) {
 function getMultiplier(voteShare) {
   if (voteShare > 0.80) return 1.0;
   if (voteShare >= 0.50) return 1.0;
-  if (voteShare >= 0.20) return 1.10; // Scaled down to 1.10
-  return 1.20; // Scaled down to 1.20
+  if (voteShare >= 0.20) return 1.10;
+  return 1.20;
 }
 
 async function calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, userId = null) {
@@ -114,12 +128,7 @@ async function calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, 
   const otherBets = userId ? bets.filter(b => b.user_id !== userId) : bets;
 
   if (amountWagered === 0) {
-    return {
-      estimated: 5,
-      multiplier: 1.0,
-      voteShare: 0,
-      isFreeVote: true
-    };
+    return { estimated: 5, multiplier: 1.0, voteShare: 0, isFreeVote: true };
   }
 
   let totalPool = amountWagered;
@@ -130,28 +139,19 @@ async function calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, 
   });
 
   const voteShare = totalPool > 0 ? winningTokens / totalPool : 0;
-  
-  // Cap multiplier on draw, unanimous, or single-person bets
   let multiplier = getMultiplier(voteShare);
   if (winningTokens === totalPool || teamPicked === 'draw') {
     multiplier = 1.0;
   }
 
   const boostedPool = totalPool * multiplier;
-
-  // Base reward structure: +5 tokens if < 20, +20 if >= 20
   const baseReward = amountWagered < 20 ? 5 : 20;
 
   const estimated = winningTokens > 0 
     ? Math.round((boostedPool / winningTokens) * amountWagered) + baseReward
     : amountWagered + baseReward;
 
-  return {
-    estimated,
-    multiplier,
-    voteShare,
-    isFreeVote: false
-  };
+  return { estimated, multiplier, voteShare, isFreeVote: false };
 }
 
 async function placeBet(userId, fixtureId, teamPicked, amountWagered) {
@@ -219,18 +219,8 @@ async function placeBet(userId, fixtureId, teamPicked, amountWagered) {
 async function getUserHistory(userId) {
   const { data, error } = await supabase
     .from('bets')
-    .select(`
-      *,
-      matches (
-        home_team,
-        away_team,
-        kickoff_time,
-        status,
-        winner
-      )
-    `)
+    .select(`*, matches ( home_team, away_team, kickoff_time, status, winner )`)
     .eq('user_id', userId);
-
   if (error) throw error;
   return data;
 }
@@ -251,22 +241,60 @@ async function getPanelMessage() {
     .in('key', ['panel_channel_id', 'panel_message_id']);
 
   if (error || !data || data.length < 2) return null;
-  
   const channel = data.find(d => d.key === 'panel_channel_id')?.value;
   const message = data.find(d => d.key === 'panel_message_id')?.value;
-
   return { channelId: channel, messageId: message };
 }
 
+async function getSoloStreak(userId, history) {
+  const settledBets = history.filter(b => b.settled);
+  settledBets.sort((a, b) => new Date(a.matches?.kickoff_time) - new Date(b.matches?.kickoff_time));
+
+  let streak = 0;
+  let shieldUsedInStage = false;
+
+  const userClass = await getConfigValue(`class:${userId}`);
+  const isOracle = userClass === 'oracle';
+  const shieldState = await getConfigValue(`oracle_shield:${userId}`) || 'off';
+
+  for (const b of settledBets) {
+    const won = b.team_picked === b.matches?.winner;
+    const isRefund = b.matches?.winner === 'draw' && b.team_picked !== 'draw';
+
+    if (won) {
+      streak++;
+    } else if (isRefund) {
+      // Ignored
+    } else {
+      if (isOracle && shieldState === 'on' && !shieldUsedInStage) {
+        shieldUsedInStage = true;
+      } else {
+        streak = 0;
+      }
+    }
+  }
+  return streak;
+}
+
+async function getUserStreak(userId, history = null) {
+  if (!history) history = await getUserHistory(userId);
+  const userClass = await getConfigValue(`class:${userId}`);
+  let currentStreak = await getSoloStreak(userId, history);
+
+  if (userClass === 'syndicate') {
+    const partnerId = await getConfigValue(`partner:${userId}`);
+    if (partnerId && partnerId !== 'pending' && partnerId !== 'Unlinked') {
+      const partnerHistory = await getUserHistory(partnerId);
+      const partnerStreak = await getSoloStreak(partnerId, partnerHistory);
+      currentStreak = Math.max(currentStreak, partnerStreak);
+    }
+  }
+  return currentStreak;
+}
+
 module.exports = {
-  supabase,
-  getOrCreateUser,
-  getActiveMatches,
-  getBetsForFixture,
-  getSpyMetric,
-  calculateEstimatedEarnings,
-  placeBet,
-  getUserHistory,
-  savePanelMessage,
-  getPanelMessage
+  supabase, getOrCreateUser, getActiveMatches, getBetsForFixture,
+  getSpyMetric, calculateEstimatedEarnings, placeBet,
+  getUserHistory, savePanelMessage, getPanelMessage,
+  getConfigValue, setConfigValue, getUserStreak
 };

@@ -1,0 +1,22 @@
+name: Deploy to JustRunMy.App
+
+on:
+  push:
+    branches:
+      - main # Deploys automatically when commits are pushed to the main branch
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Deploy via Git Push
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          # Pushes the workspace to your JRMA custom Git remote using repository secrets
+          git push --force "https://${{ secrets.JRMA_USERNAME }}:${{ secrets.JRMA_PASSWORD }}@deploy.justrunmy.app/${{ secrets.JRMA_APP_NAME }}.git" main:master

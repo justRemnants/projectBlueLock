@@ -4,12 +4,14 @@
   "description": "Project Blue-Lock Web & Serverless Discord Bot",
   "scripts": {
     "register": "node scripts/register-commands.js",
-    "dev": "vercel dev"
+    "dev": "vercel dev",
+    "start": "node index.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.8",
     "axios": "^1.6.8",
     "discord-interactions": "^3.4.0",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
   }
 }
