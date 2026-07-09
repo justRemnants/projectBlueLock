@@ -3,7 +3,7 @@
  *
  * Vercel Serverless Function — Discord Webhook Interaction Handler
  * Upgraded with a self-healing dual-host router, buffer-safe body parser to prevent hangs,
- * manual co-op partner validation, 3-stage Golden Ticket toggles, and tight 800ms ping limits
+ * manual co-op partner validation, 3-stage Golden Ticket toggles, and safe 1800ms ping limits
  * alongside a diagnostic latency testing module.
  */
 
@@ -55,8 +55,8 @@ function getRawBody(req) {
 }
 
 /**
- * Pings JRMA with a tight 800ms timeout.
- * If JRMA has not responded in 800ms, it is sleeping, so Vercel aborts and triggers local fallback.
+ * Pings JRMA with a safe 1800ms timeout.
+ * If JRMA has not responded in 1800ms, it is sleeping, so Vercel aborts and triggers local fallback.
  */
 async function tryForwardToJRMA(rawBody, headers) {
   const start = Date.now();
@@ -67,7 +67,7 @@ async function tryForwardToJRMA(rawBody, headers) {
         'x-signature-timestamp': headers['x-signature-timestamp'],
         'content-type': 'application/json'
       },
-      timeout: 800 // Optimized to 800ms. Cut connections early if JRMA is sleeping.
+      timeout: 1800 // Calibrated to 1.8 seconds to avoid false fallbacks while preserving fallback runway
     });
     
     // Add transit diagnostic time if it is a ping request
@@ -306,14 +306,12 @@ async function handleCommand(interaction, res) {
     });
   }
 
-  // Diagnostic ping command to audit serverless failover latency
   if (name === 'ping') {
     const isVercel = process.env.VERCEL === '1';
     const hostText = isVercel ? 'Vercel Serverless' : 'JustRunMy.App (Persistent VM)';
     const startDB = Date.now();
     
     try {
-      // Benchmark database ping
       await supabase.from('system_config').select('value').eq('key', 'panel_channel_id').single();
       const dbDuration = Date.now() - startDB;
       
@@ -326,7 +324,7 @@ async function handleCommand(interaction, res) {
             title: '🏓  Routing Pong Diagnostics',
             description: `⚡  **Active Webhook Host:** \`${hostText}\`\n` +
                         `🗄️  **Supabase Database Ping:** \`${dbDuration}ms\`\n` +
-                        `[PROXY_HINT]` // Replaced dynamically by proxy tracer if routed via Vercel
+                        `[PROXY_HINT]`
           }]
         }
       });
