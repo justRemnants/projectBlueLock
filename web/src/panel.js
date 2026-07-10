@@ -21,7 +21,7 @@ const COLORS = {
 const COUNTRY_FLAGS = {
   "England": "🏴󠁧󠁢🇪󠁮󠁧󠁿", 
   "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿", 
-  "Wales": "🏴󠁧󠁢wales/",
+  "Wales": "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
   "Argentina": "🇦🇷", "Australia": "🇦🇺", "Belgium": "🇧🇪", "Brazil": "🇧🇷",
   "Canada": "🇨🇦", "Cameroon": "🇨🇲", "Costa Rica": "🇨🇷", "Croatia": "🇭🇷",
   "Denmark": "🇩🇰", "Ecuador": "🇪🇨", "France": "🇫🇷",
@@ -42,6 +42,17 @@ const COUNTRY_FLAGS = {
 
 function getFlag(teamName) {
   return COUNTRY_FLAGS[teamName] || "⚽";
+}
+
+/**
+ * Subdivision flag select menu fallback logic.
+ * Ensures England, Scotland, and Wales render UK flags in menus, rather than generic black flag fallbacks.
+ */
+function getSelectMenuEmoji(teamName) {
+  if (teamName === "England" || teamName === "Scotland" || teamName === "Wales") {
+    return "🇬🇧";
+  }
+  return getFlag(teamName);
 }
 
 function fmt(n) {
@@ -360,12 +371,12 @@ async function buildMatchDetail(match, dbUser) {
         {
           label: `${match.home_team} Win`,
           value: 'home',
-          emoji: { name: '🏠' }
+          emoji: { name: getSelectMenuEmoji(match.home_team) } // Dynmically falls back to UK flag in menus
         },
         {
           label: `${match.away_team} Win`,
           value: 'away',
-          emoji: { name: '✈️' }
+          emoji: { name: getSelectMenuEmoji(match.away_team) } // Dynmically falls back to UK flag in menus
         }
       ]
     }]

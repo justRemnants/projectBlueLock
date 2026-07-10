@@ -144,6 +144,10 @@ async function settleMatch(fixtureId, apiMatch) {
     await supabase.from('users').update({ tokens_balance: newBalance }).eq('discord_id', b.user_id);
     await supabase.from('bets').update({ settled: true }).eq('bet_id', b.bet_id);
 
+    // --- NEW SYSTEM AUTOMATED ROLLBACKS ---
+    // Cleans up the ledger corruption flag for players who survived the match uncaught!
+    await supabase.from('system_config').delete().eq('key', `ledger_corrupted:${b.user_id}`);
+
     const embedColor = isRefund ? COLORS.blue : isWinner ? COLORS.green : COLORS.red;
     const outcomeTitle = isRefund ? '↩️ Match Refunded' : isWinner ? '🎉 Prediction Correct!' : '❌ Prediction Incorrect';
     const displayWager = `${fmt(b.amount_wagered)} tokens`;
@@ -171,6 +175,12 @@ async function settleMatch(fixtureId, apiMatch) {
 
     await sendDM(b.user_id, dmEmbed);
   }
+
+  // --- AUTOMATED WEBHOOK CLEANUP ---
+  // Purge remaining cheat logs, wager history, and sabotage metadata for this completed match
+  await supabase.from('system_config').delete().like('key', `cheat:%:${fixtureId}`);
+  await supabase.from('system_config').delete().like('key', `original_wager:%:${fixtureId}`);
+  await supabase.from('system_config').delete().like('key', `sabotaged_victim:%:${fixtureId}`);
 }
 
 async function syncFixtures() {

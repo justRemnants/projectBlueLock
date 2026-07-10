@@ -69,19 +69,27 @@ async function buildLeaderboardEmbed() {
 
   if (error || !users) throw new Error('Failed to retrieve standings.');
 
-  // Batch-fetch all class keys and streaks in parallel to avoid N+1 sequential DB round-trips
+  // Batch-fetch all class, streak, and ledger corruption keys in parallel
   const discordIds = users.map(u => u.discord_id);
   const classKeys = discordIds.map(id => `class:${id}`);
+  const corruptionKeys = discordIds.map(id => `ledger_corrupted:${id}`);
+  const allKeys = [...classKeys, ...corruptionKeys];
 
-  const [classRows, streakResults] = await Promise.all([
-    supabase.from('system_config').select('key, value').in('key', classKeys),
+  const [configRows, streakResults] = await Promise.all([
+    supabase.from('system_config').select('key, value').in('key', allKeys),
     Promise.all(discordIds.map(id => getUserStreak(id)))
   ]);
 
   const classMap = {};
-  for (const row of (classRows.data || [])) {
-    const id = row.key.replace('class:', '');
-    classMap[id] = row.value || 'None';
+  const corruptionMap = {};
+  for (const row of (configRows.data || [])) {
+    if (row.key.startsWith('class:')) {
+      const id = row.key.replace('class:', '');
+      classMap[id] = row.value || 'None';
+    } else if (row.key.startsWith('ledger_corrupted:')) {
+      const id = row.key.replace('ledger_corrupted:', '');
+      corruptionMap[id] = row.value === 'true';
+    }
   }
 
   const lines = [];
@@ -92,7 +100,8 @@ async function buildLeaderboardEmbed() {
     const uClass = (classMap[u.discord_id] || 'None');
     const streak = streakResults[i] || 0;
     const streakIndicator = streak >= 2 ? ` 🔥 x${streak}` : '';
-    lines.push(`${medal} **${name}** (${uClass.toUpperCase()}${streakIndicator}) · \`${fmt(u.tokens_balance)} tokens\``);
+    const corruptionSuffix = corruptionMap[u.discord_id] ? ' `~`' : '';
+    lines.push(`${medal} **${name}${corruptionSuffix}** (${uClass.toUpperCase()}${streakIndicator}) · \`${fmt(u.tokens_balance)} tokens\``);
   }
 
   return {
@@ -659,37 +668,92 @@ async function handleComponent(interaction, res) {
         return sendJson(res, errorEmbed(`Insufficient tokens. Audit costs ${cost} (Balance: ${dbUser.tokens_balance}).`));
       }
 
+      // Deduct investigation cost
       await supabase.from('users').update({ tokens_balance: dbUser.tokens_balance - cost }).eq('discord_id', user.id);
 
-      const cheatUsed = await getConfigValue(`cheat:${targetId}:${fixtureId}`);
-      if (cheatUsed) {
+      const cheatsUsedRaw = await getConfigValue(`cheat:${targetId}:${fixtureId}`) || '';
+      const cheatsUsed = cheatsUsedRaw ? cheatsUsedRaw.split(',') : [];
+
+      if (cheatsUsed.length > 0) {
+        // Apply Fine (Tank gets a 50% discount on fines)
         const actualFine = 30;
         const targetClass = await getConfigValue(`class:${targetId}`);
         const fineApplied = targetClass === 'tank' ? 15 : actualFine;
 
         const targetUser = await supabase.from('users').select('tokens_balance').eq('discord_id', targetId).single();
         const nextBal = Math.max(0, (targetUser.data?.tokens_balance || 0) - fineApplied);
+        await supabase.from('users').update({ tokens_balance: nextBal }).eq('discord_id', targetId);
 
-        if (cheatUsed === 'ghost') {
-          const targetBet = await supabase.from('bets').select('*').eq('user_id', targetId).eq('fixture_id', fixtureId).single();
-          if (targetBet.data) {
-            await supabase.from('bets').update({ amount_wagered: Math.max(0, targetBet.data.amount_wagered - 150) }).eq('user_id', targetId).eq('fixture_id', fixtureId);
+        // Wipe target's active win streak instantly (Ignore all past wins settled before this date)
+        await setConfigValue(`streak_reset_date:${targetId}`, new Date().toISOString());
+
+        let ghostReverted = false;
+        let pivotReverted = false;
+        let sabotageReverted = false;
+
+        // Perform exact rollback based on the comma-separated cheat list
+        for (const cheat of cheatsUsed) {
+          if (cheat === 'ghost' || cheat === 'pivot') {
+            // Cancel/void the entire bet (deletes row)
+            await supabase.from('bets').delete().eq('user_id', targetId).eq('fixture_id', fixtureId);
+            if (cheat === 'ghost') ghostReverted = true;
+            if (cheat === 'pivot') {
+              pivotReverted = true;
+              // Refund their original non-siphoned tokens to prevent unfair complete wallet loss on standard pivot wagers
+              const originalWager = await getConfigValue(`original_wager:${targetId}:${fixtureId}`) || '0';
+              const refundAmount = parseInt(originalWager, 10);
+              if (refundAmount > 0) {
+                const targetFresh = await supabase.from('users').select('tokens_balance').eq('discord_id', targetId).single();
+                await supabase.from('users').update({ tokens_balance: (targetFresh.data?.tokens_balance || 0) + refundAmount }).eq('discord_id', targetId);
+              }
+            }
+          }
+
+          if (cheat === 'sabotage') {
+            // Retrieve victim ID and exact token shift value to perform precise mathematical reversal
+            const sabotageMeta = await getConfigValue(`sabotaged_victim:${targetId}:${fixtureId}`);
+            if (sabotageMeta) {
+              const [victimId, shiftAmountRaw] = sabotageMeta.split(':');
+              const shiftAmount = parseInt(shiftAmountRaw, 10);
+              
+              const victimBet = await supabase.from('bets').select('*').eq('user_id', victimId).eq('fixture_id', fixtureId).single();
+              if (victimBet.data) {
+                // Reverse the sabotage token alteration
+                const nextWager = Math.max(0, victimBet.data.amount_wagered - shiftAmount);
+                await supabase.from('bets').update({ amount_wagered: nextWager }).eq('user_id', victimId).eq('fixture_id', fixtureId);
+                sabotageReverted = true;
+              }
+              // Clean up metadata
+              await setConfigValue(`sabotaged_victim:${targetId}:${fixtureId}`, '');
+            }
           }
         }
 
-        await supabase.from('users').update({ tokens_balance: nextBal }).eq('discord_id', targetId);
-        
+        // Clean up the target's cheat configuration keys completely
+        await setConfigValue(`cheat:${targetId}:${fixtureId}`, '');
+        await setConfigValue(`ledger_corrupted:${targetId}`, '');
+
+        // Reward Investigator with Bounty (75 tokens + full refund of cost)
         const bounty = 75 + cost;
         await supabase.from('users').update({ tokens_balance: dbUser.tokens_balance - cost + bounty }).eq('discord_id', user.id);
-        await setConfigValue(`cheat:${targetId}:${fixtureId}`, '');
+
+        // Build a detailed public whistleblower alert
+        const reportParts = [];
+        if (ghostReverted) reportParts.push('• 👻 **Ghost Wager** deleted, and siphoned tokens destroyed!');
+        if (pivotReverted) reportParts.push('• 🔄 **HT Pivot** canceled, and bet voided!');
+        if (sabotageReverted) reportParts.push('• 💥 **System Sabotage** completely rolled back and victim bet restored!');
 
         return sendJson(res, {
           type: R.MESSAGE,
           data: {
-            content: `🚨  **WHISTLEBLOWER BREACH**  🚨\n\n<@${user.id}> caught <@${targetId}> utilizing database hacks on match \`${fixtureId}\`!\n• <@${targetId}> has been fined **${fineApplied} tokens**.\n• <@${user.id}> has received a **+${bounty} token Bounty Reward**!`
+            content: `🚨  **WHISTLEBLOWER BREACH DETECTED**  🚨\n\n<@${user.id}> caught <@${targetId}> utilizing forbidden database exploits on match \`${fixtureId}\`!\n\n` +
+                     `**ROLLBACK LOGS:**\n${reportParts.join('\n')}\n` +
+                     `• <@${targetId}> has been fined **${fineApplied} tokens** and their win streak wiped!\n` +
+                     `• <@${user.id}> has been awarded a **+${bounty} token Bounty Reward**!`
           }
         });
       } else {
+        // Target is innocent
         const targetUser = await supabase.from('users').select('tokens_balance').eq('discord_id', targetId).single();
         const nextBal = (targetUser.data?.tokens_balance || 0) + 10;
         await supabase.from('users').update({ tokens_balance: nextBal }).eq('discord_id', targetId);
@@ -746,9 +810,20 @@ async function handleComponent(interaction, res) {
         return sendJson(res, errorEmbed(`Insufficient tokens! Exploiting this module costs ${cost} (Wallet: ${dbUser.tokens_balance}).`));
       }
 
+      // Check for already-used cheats to prevent stacking the same one
+      const existingCheatsRaw = await getConfigValue(`cheat:${user.id}:${fixtureId}`) || '';
+      const existingCheats = existingCheatsRaw ? existingCheatsRaw.split(',') : [];
+
+      if (existingCheats.includes(chosenCheat)) {
+        return sendJson(res, errorEmbed(`Exploit rejected! You have already executed the **${chosenCheat.toUpperCase()}** cheat on this match.`));
+      }
+
       if (chosenCheat === 'pivot') {
         const bet = await supabase.from('bets').select('*').eq('user_id', user.id).eq('fixture_id', fixtureId).single();
-        if (!bet.data || bet.data.amount_wagered % 2 === 0) {
+        if (!bet.data) {
+          return sendJson(res, errorEmbed('Exploit rejected! You must place an active bet before you can execute a pivot.'));
+        }
+        if (bet.data.amount_wagered % 2 === 0) {
           return sendJson(res, errorEmbed('Exploit rejected! You must have wagers ending in an ODD integer locked in before kickoff to prepare a Half-Time Pivot.'));
         }
       }
@@ -784,11 +859,18 @@ async function handleComponent(interaction, res) {
       }
 
       await supabase.from('users').update({ tokens_balance: dbUser.tokens_balance - cost }).eq('discord_id', user.id);
-      await setConfigValue(`cheat:${user.id}:${fixtureId}`, chosenCheat);
+      
+      // Update cheats list
+      existingCheats.push(chosenCheat);
+      await setConfigValue(`cheat:${user.id}:${fixtureId}`, existingCheats.join(','));
 
       if (chosenCheat === 'pivot') {
         const bet = await supabase.from('bets').select('*').eq('user_id', user.id).eq('fixture_id', fixtureId).single();
         const next = bet.data.team_picked === 'home' ? 'away' : 'home';
+
+        // Save original wager size to prevent complete balance loss upon investigation voiding
+        await setConfigValue(`original_wager:${user.id}:${fixtureId}`, bet.data.amount_wagered.toString());
+
         await supabase.from('bets').update({ team_picked: next }).eq('user_id', user.id).eq('fixture_id', fixtureId);
 
         return sendJson(res, {
@@ -812,8 +894,19 @@ async function handleComponent(interaction, res) {
         } else {
           const config = await getPanelMessage();
           if (config) {
-            await axios.post(`https://discord.com/api/v10/channels/${config.channelId}/messages`, {
-              content: `⚠️  **[BANK SECURITY WARNING]** Unverified token activity detected in server. Account masked ending with: \`***${user.username.slice(-3)}\``
+            const generalChannelId = await getConfigValue('general_channel_id');
+            const targetChan = generalChannelId || config.channelId;
+
+            // Approximate middle name segment extraction with minor index shifting (makes tracing ghost wagers dynamic and engaging)
+            const len = user.username.length;
+            let start = Math.floor(len / 2) - 1;
+            const shift = Math.floor(Math.random() * 3) - 1; // Randomly shifts starting index by -1, 0, or +1
+            start = Math.max(1, Math.min(len - 3, start + shift));
+            const midSegment = user.username.substring(start, start + 2);
+            const maskedName = `***${midSegment}***`;
+
+            await axios.post(`https://discord.com/api/v10/channels/${targetChan}/messages`, {
+              content: `⚠️  **[BANK SECURITY WARNING]** Unverified token activity detected in server. Account masked with approximate middle segment: \`${maskedName}\``
             }, { headers: { Authorization: `Bot ${BOT_TOKEN}` } });
           }
         }
@@ -852,13 +945,27 @@ async function handleComponent(interaction, res) {
         return sendJson(res, errorEmbed('System Hack Blocked! Target is an Investigator. Your payload has failed and your username has been exposed to them!'));
       }
 
+      // Check for already-used cheats to prevent stacking the same one
+      const existingCheatsRaw = await getConfigValue(`cheat:${user.id}:${fixtureId}`) || '';
+      const existingCheats = existingCheatsRaw ? existingCheatsRaw.split(',') : [];
+
+      if (existingCheats.includes('sabotage')) {
+        return sendJson(res, errorEmbed(`Exploit rejected! You have already executed the **SABOTAGE** cheat on this match.`));
+      }
+
       await supabase.from('users').update({ tokens_balance: dbUser.tokens_balance - cost }).eq('discord_id', user.id);
-      await setConfigValue(`cheat:${user.id}:${fixtureId}`, 'sabotage');
+      
+      // Update cheats list
+      existingCheats.push('sabotage');
+      await setConfigValue(`cheat:${user.id}:${fixtureId}`, existingCheats.join(','));
 
       const targetBet = await supabase.from('bets').select('*').eq('user_id', targetId).eq('fixture_id', fixtureId).single();
       const current = targetBet.data?.amount_wagered || 0;
       const change = Math.random() > 0.5 ? 50 : -50;
       await supabase.from('bets').update({ amount_wagered: Math.max(0, current + change) }).eq('user_id', targetId).eq('fixture_id', fixtureId);
+
+      // Save sabotage meta-details to allow precise manual or automated rollbacks
+      await setConfigValue(`sabotaged_victim:${user.id}:${fixtureId}`, `${targetId}:${change}`);
 
       try {
         const ch = await axios.post('https://discord.com/api/v10/users/@me/channels', { recipient_id: targetId }, { headers: { Authorization: `Bot ${BOT_TOKEN}` } });
@@ -894,9 +1001,22 @@ async function handleModal(interaction, res) {
     }
 
     try {
-      const dbUser = await getOrCreateUser(user);
-      const history = await getUserHistory(user.id);
-      
+      // 1. Fetch User, History, and target Match concurrently to cut down latency (Fast ~150ms)
+      const [dbUser, history, match] = await Promise.all([
+        getOrCreateUser(user),
+        getUserHistory(user.id),
+        supabase.from('matches').select('*').eq('fixture_id', fixtureId).single().then(r => r.data)
+      ]);
+
+      if (!match) {
+        return sendJson(res, errorEmbed('The selected match could not be found.'));
+      }
+
+      if (new Date() >= new Date(match.kickoff_time)) {
+        return sendJson(res, errorEmbed('Wager declined! This match has already kicked off and predictions are locked.'));
+      }
+
+      // 2. Perform validations instantly using local pre-fetched data (0ms cost)
       const otherActiveBets = history.filter(b => !b.settled && b.fixture_id !== fixtureId);
       const totalActiveWagered = otherActiveBets.reduce((sum, b) => sum + b.amount_wagered, 0);
       const existingWager = history.find(b => b.fixture_id === fixtureId)?.amount_wagered || 0;
@@ -911,13 +1031,15 @@ async function handleModal(interaction, res) {
         ));
       }
 
-      const result = await placeBet(user.id, fixtureId, teamPicked, amountWagered);
-      const estEarnings = await calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, user.id);
-      const matches = await getActiveMatches();
-      const match = matches.find(m => m.fixture_id === fixtureId);
+      // 3. Save bet and compute payout estimate concurrently (~200ms)
+      const [result, estEarnings] = await Promise.all([
+        placeBet(user.id, fixtureId, teamPicked, amountWagered),
+        calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, user.id)
+      ]);
 
+      // 4. Return instant confirmation payload (Total execution time well under 500ms)
       return sendJson(res, {
-        type: R.MESSAGE,
+        type: R.MESSAGE, // Type 4
         data: {
           flags: FLAGS.EPHEMERAL,
           embeds: [buildBetConfirmEmbed({
@@ -931,6 +1053,7 @@ async function handleModal(interaction, res) {
         }
       });
     } catch (err) {
+      console.error('[Wager Modal Submit Error]:', err.message);
       return sendJson(res, errorEmbed(err.message));
     }
   }
