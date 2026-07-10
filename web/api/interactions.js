@@ -50,28 +50,6 @@ function getRawBody(req) {
   });
 }
 
-async function editChannelMessage(channelId, messageId, data) {
-  await axios.patch(
-    `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
-    data,
-    { 
-      headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' },
-      timeout: 8000
-    }
-  );
-}
-
-async function refreshPanel() {
-  try {
-    const config = await getPanelMessage();
-    if (!config) return;
-    const panelData = await buildMasterPanel();
-    await editChannelMessage(config.channelId, config.messageId, panelData);
-  } catch (err) {
-    console.warn('Panel refresh failed inside endpoint handler:', err.message);
-  }
-}
-
 function errorEmbed(msg) {
   return {
     type: 4,
@@ -353,7 +331,7 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Fast Selection: Acknowledges component, then fires non-blocking REST calls to reset the visual drop-down state.
+  // Blazing Fast Selection (<150ms): Zero blocking REST/PATCH calls, responds instantly with direct Ephemeral layout
   if (customId === 'select_match') {
     const fixtureId = interaction.data.values[0];
     if (fixtureId === 'none') {
@@ -375,17 +353,7 @@ async function handleComponent(interaction, res) {
       // 2. Assemble the detailed match panel layout (~150ms)
       const detail = await buildMatchDetail(match, dbUser);
 
-      // 3. Reset dropdown menu visual state via REST in the background (NON-BLOCKING)
-      // Passing the exact same components causes Discord to reset local visual selection.
-      if (interaction.channel_id && interaction.message?.id) {
-        axios.patch(
-          `https://discord.com/api/v10/channels/${interaction.channel_id}/messages/${interaction.message.id}`,
-          { components: interaction.message.components },
-          { headers: { Authorization: `Bot ${BOT_TOKEN}` }, timeout: 4000 }
-        ).catch(e => console.warn('Failed to clear dropdown:', e.message));
-      }
-
-      // 4. Return the Ephemeral Match Card directly in the HTTP Response
+      // 3. Return the Ephemeral Match Card directly in the HTTP Response
       return sendJson(res, {
         type: R.MESSAGE, // Type 4
         data: {
@@ -806,8 +774,6 @@ async function handleComponent(interaction, res) {
         const bet = await supabase.from('bets').select('*').eq('user_id', user.id).eq('fixture_id', fixtureId).single();
         const next = bet.data.team_picked === 'home' ? 'away' : 'home';
         await supabase.from('bets').update({ team_picked: next }).eq('user_id', user.id).eq('fixture_id', fixtureId);
-        
-        refreshPanel().catch(() => {});
 
         return sendJson(res, {
           type: R.MESSAGE,
@@ -835,8 +801,6 @@ async function handleComponent(interaction, res) {
             }, { headers: { Authorization: `Bot ${BOT_TOKEN}` } });
           }
         }
-
-        refreshPanel().catch(() => {});
 
         return sendJson(res, {
           type: R.MESSAGE,
@@ -889,8 +853,6 @@ async function handleComponent(interaction, res) {
         console.warn('Could not DM user sabotage notice:', dmErr.message);
       }
 
-      refreshPanel().catch(() => {});
-
       return sendJson(res, {
         type: R.MESSAGE,
         data: { flags: FLAGS.EPHEMERAL, content: `💥  **Sabotage active.** Target bet shifted by ${change} tokens.` }
@@ -937,8 +899,6 @@ async function handleModal(interaction, res) {
       const estEarnings = await calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, user.id);
       const matches = await getActiveMatches();
       const match = matches.find(m => m.fixture_id === fixtureId);
-
-      refreshPanel().catch(() => {});
 
       return sendJson(res, {
         type: R.MESSAGE,
