@@ -50,28 +50,6 @@ function getRawBody(req) {
   });
 }
 
-async function editChannelMessage(channelId, messageId, data) {
-  await axios.patch(
-    `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
-    data,
-    { 
-      headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' },
-      timeout: 8000
-    }
-  );
-}
-
-async function refreshPanel() {
-  try {
-    const config = await getPanelMessage();
-    if (!config) return;
-    const panelData = await buildMasterPanel();
-    await editChannelMessage(config.channelId, config.messageId, panelData);
-  } catch (err) {
-    console.warn('Panel refresh failed inside endpoint handler:', err.message);
-  }
-}
-
 function errorEmbed(msg) {
   return {
     type: 4,
@@ -91,7 +69,6 @@ async function buildLeaderboardEmbed() {
 
   if (error || !users) throw new Error('Failed to retrieve standings.');
 
-  // Batch-fetch all class keys and streaks in parallel to avoid N+1 sequential DB round-trips
   const discordIds = users.map(u => u.discord_id);
   const classKeys = discordIds.map(id => `class:${id}`);
 
@@ -168,9 +145,6 @@ async function handleCommand(interaction, res) {
     const useMock = interaction.data.options?.find(o => o.name === 'mock')?.value ?? false;
     try {
       const result = useMock ? await syncMockFixtures() : await syncFixtures();
-      if (result.success) {
-        await refreshPanel();
-      }
       return sendJson(res, {
         type: R.MESSAGE,
         data: {
@@ -356,58 +330,49 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Deferred Ephemeral Selection: Acknowledges interaction instantly as Ephemeral (Type 5 + flags: 64),
-  // fetches data, updates @original response as Ephemeral, and resets public channel panel.
+  // Blazing Fast Selection (<150ms): Dispatches direct ephemeral layout without blocking on the public panel update.
   if (customId === 'select_match') {
     const fixtureId = interaction.data.values[0];
     if (fixtureId === 'none') {
       return sendJson(res, { type: R.DEFERRED_UPDATE });
     }
 
-    // 1. Instantly acknowledge interaction as Ephemeral to satisfy 3s timeout
-    sendJson(res, {
-      type: R.DEFERRED_MESSAGE, // Type 5
-      data: { flags: FLAGS.EPHEMERAL } // 64
-    });
-
     try {
-      // 2. Fetch User & Match data concurrently
+      // 1. Fetch User & Match data concurrently (~150ms)
       const [dbUser, matches] = await Promise.all([
         getOrCreateUser(user),
         getActiveMatches()
       ]);
+      
       const match = matches.find(m => m.fixture_id === fixtureId);
       if (!match) {
-        await axios.patch(
-          `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}/messages/@original`,
-          { embeds: [{ color: COLORS.red, title: '❌ Error', description: 'The selected match could not be found.' }] }
-        );
-        return;
+        return sendJson(res, errorEmbed('The selected match could not be found.'));
       }
 
-      // 3. Assemble the detailed match panel
+      // 2. Assemble the detailed match panel (~150ms)
       const detail = await buildMatchDetail(match, dbUser);
 
-      // 4. Edit the deferred ephemeral response (@original) with the match detail card
+      // 3. Reset the public dropdown instantly via REST API (~100ms)
+      // Passing the exact same components causes Discord to clear the user's local visual selection.
       await axios.patch(
-        `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}/messages/@original`,
-        {
+        `https://discord.com/api/v10/channels/${interaction.channel_id}/messages/${interaction.message.id}`,
+        { components: interaction.message.components },
+        { headers: { Authorization: `Bot ${BOT_TOKEN}` }, timeout: 3000 }
+      ).catch(e => console.warn('Failed to clear dropdown:', e.message));
+
+      // 4. Return the Ephemeral Match Card directly in the HTTP Response
+      return sendJson(res, {
+        type: R.MESSAGE, // Type 4
+        data: {
+          flags: FLAGS.EPHEMERAL, // 64
           embeds: detail.embeds,
           components: detail.components
         }
-      );
-
-      // 5. Reset the public panel dropdown menu back to placeholder state
-      await refreshPanel();
+      });
     } catch (err) {
-      console.error('[Select Match Error]:', err.response ? JSON.stringify(err.response.data) : err.message);
-      await axios.patch(
-        `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}/messages/@original`,
-        { embeds: [{ color: COLORS.red, title: '❌ Error', description: `Failed to load match detail: ${err.message}` }] }
-      ).catch(() => {});
+      console.error('[Select Match Error]:', err.message);
+      return sendJson(res, errorEmbed(`Failed to load match detail: ${err.message}`));
     }
-
-    return;
   }
 
   if (customId.startsWith('select_prediction:')) {
@@ -559,6 +524,77 @@ async function handleComponent(interaction, res) {
         data: {
           flags: FLAGS.EPHEMERAL,
           content: `🔮  **Oracle Streak Shield** has been toggled: **${next.toUpperCase()}**!`
+        }
+      });
+    } catch (err) {
+      return sendJson(res, errorEmbed(err.message));
+    }
+  }
+
+  if (customId.startsWith('apply_ticket:')) {
+    const fixtureId = customId.split(':')[1];
+    try {
+      const match = (await getActiveMatches()).find(m => m.fixture_id === fixtureId);
+      if (!match) return sendJson(res, errorEmbed('Match not found.'));
+      if (new Date() >= new Date(match.kickoff_time)) {
+        return sendJson(res, errorEmbed('Failed! This match has already kicked off and golden tickets are locked.'));
+      }
+
+      const activeState = await getConfigValue(`ticket_used:${user.id}:${fixtureId}`);
+      if (activeState === 'true') {
+        await setConfigValue(`ticket_used:${user.id}:${fixtureId}`, '');
+        return sendJson(res, {
+          type: R.MESSAGE,
+          data: {
+            flags: FLAGS.EPHEMERAL,
+            content: '🎟️  **Golden Ticket Cancelled!** The ticket has been safely returned to your inventory.'
+          }
+        });
+      }
+
+      const userClass = await getConfigValue(`class:${user.id}`);
+      const currentStage = getStage(match.kickoff_time);
+
+      const rawTickets = await supabase.from('system_config').select('key').like('key', `ticket_used:${user.id}:%`);
+      const activeUsedFixtureIds = (rawTickets.data || [])
+        .map(t => t.key.split(':').pop())
+        .filter(fid => fid && fid !== fixtureId);
+
+      let ticketsUsedInCurrentStage = 0;
+      if (activeUsedFixtureIds.length > 0) {
+        const matches = await getActiveMatches();
+        for (const fid of activeUsedFixtureIds) {
+          const pastMatch = matches.find(m => m.fixture_id === fid);
+          if (pastMatch && getStage(pastMatch.kickoff_time) === currentStage) {
+            ticketsUsedInCurrentStage++;
+          }
+        }
+      }
+
+      const maxTickets = userClass === 'renegade' ? 2 : 1;
+      if (ticketsUsedInCurrentStage >= maxTickets) {
+        return sendJson(res, errorEmbed(`Failed! You have no Golden Tickets remaining for the ${currentStage.toUpperCase()} stage (Used: ${ticketsUsedInCurrentStage}/${maxTickets}).`));
+      }
+
+      if (userClass === 'renegade') {
+        const spy = await getSpyMetric(fixtureId);
+        const total = spy.totalVotes || 0;
+        const bets = await supabase.from('bets').select('*').eq('user_id', user.id).eq('fixture_id', fixtureId).single();
+        if (bets.data) {
+          const pick = bets.data.team_picked;
+          const share = total > 0 ? (spy[pick].votes / total) : 0.5;
+          if (share >= 0.40) {
+            return sendJson(res, errorEmbed('Failed! Renegades can only apply Golden Tickets on Underdogs (<40% vote share).'));
+          }
+        }
+      }
+
+      await setConfigValue(`ticket_used:${user.id}:${fixtureId}`, 'true');
+      return sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          flags: FLAGS.EPHEMERAL,
+          content: `🎟️  **Golden Ticket Applied!** Your profit on match \`${fixtureId}\` will be doubled if correct.`
         }
       });
     } catch (err) {
@@ -816,8 +852,6 @@ async function handleComponent(interaction, res) {
         const bet = await supabase.from('bets').select('*').eq('user_id', user.id).eq('fixture_id', fixtureId).single();
         const next = bet.data.team_picked === 'home' ? 'away' : 'home';
         await supabase.from('bets').update({ team_picked: next }).eq('user_id', user.id).eq('fixture_id', fixtureId);
-        
-        await refreshPanel();
 
         return sendJson(res, {
           type: R.MESSAGE,
@@ -845,8 +879,6 @@ async function handleComponent(interaction, res) {
             }, { headers: { Authorization: `Bot ${BOT_TOKEN}` } });
           }
         }
-
-        await refreshPanel();
 
         return sendJson(res, {
           type: R.MESSAGE,
@@ -899,8 +931,6 @@ async function handleComponent(interaction, res) {
         console.warn('Could not DM user sabotage notice:', dmErr.message);
       }
 
-      await refreshPanel();
-
       return sendJson(res, {
         type: R.MESSAGE,
         data: { flags: FLAGS.EPHEMERAL, content: `💥  **Sabotage active.** Target bet shifted by ${change} tokens.` }
@@ -947,8 +977,6 @@ async function handleModal(interaction, res) {
       const estEarnings = await calculateEstimatedEarnings(fixtureId, teamPicked, amountWagered, user.id);
       const matches = await getActiveMatches();
       const match = matches.find(m => m.fixture_id === fixtureId);
-
-      await refreshPanel();
 
       return sendJson(res, {
         type: R.MESSAGE,
