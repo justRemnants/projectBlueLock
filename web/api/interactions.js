@@ -356,55 +356,57 @@ async function handleComponent(interaction, res) {
     }
   }
 
-  // Two-Step Selection: Acknowledges interaction instantly to beat 3s timeout, 
-  // waits 600ms to bypass Discord Webhook race condition, then sends data.
+  // Deferred Ephemeral Selection: Acknowledges interaction instantly as Ephemeral (Type 5 + flags: 64),
+  // fetches data, updates @original response as Ephemeral, and resets public channel panel.
   if (customId === 'select_match') {
     const fixtureId = interaction.data.values[0];
     if (fixtureId === 'none') {
       return sendJson(res, { type: R.DEFERRED_UPDATE });
     }
 
-    // 1. Instantly respond with Type 7 (UPDATE_MESSAGE). 
-    // Passing the same components clears the selected value on the user's screen.
+    // 1. Instantly acknowledge interaction as Ephemeral to satisfy 3s timeout
     sendJson(res, {
-      type: R.UPDATE_MESSAGE,
-      data: {
-        embeds: interaction.message.embeds,
-        components: interaction.message.components
-      }
+      type: R.DEFERRED_MESSAGE, // Type 5
+      data: { flags: FLAGS.EPHEMERAL } // 64
     });
 
     try {
-      // 2. Introduce a deliberate 600ms delay.
-      // This guarantees Discord's internal systems fully process the HTTP response 
-      // above BEFORE we hit the Followup Webhook, eliminating Error 10015.
-      await new Promise(resolve => setTimeout(resolve, 600));
-
-      // 3. Fetch User & Match data concurrently
+      // 2. Fetch User & Match data concurrently
       const [dbUser, matches] = await Promise.all([
         getOrCreateUser(user),
         getActiveMatches()
       ]);
       const match = matches.find(m => m.fixture_id === fixtureId);
-      if (!match) return;
+      if (!match) {
+        await axios.patch(
+          `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}/messages/@original`,
+          { embeds: [{ color: COLORS.red, title: '❌ Error', description: 'The selected match could not be found.' }] }
+        );
+        return;
+      }
 
+      // 3. Assemble the detailed match panel
       const detail = await buildMatchDetail(match, dbUser);
 
-      // 4. Dispatch the ephemeral match card via Followup Webhook
-      await axios.post(
-        `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}`,
+      // 4. Edit the deferred ephemeral response (@original) with the match detail card
+      await axios.patch(
+        `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}/messages/@original`,
         {
           embeds: detail.embeds,
-          components: detail.components,
-          flags: FLAGS.EPHEMERAL
-        },
-        { timeout: 8000 }
+          components: detail.components
+        }
       );
+
+      // 5. Reset the public panel dropdown menu back to placeholder state
+      await refreshPanel();
     } catch (err) {
-      console.error('[Select Match Followup Error]:', err.response ? JSON.stringify(err.response.data) : err.message);
+      console.error('[Select Match Error]:', err.response ? JSON.stringify(err.response.data) : err.message);
+      await axios.patch(
+        `https://discord.com/api/v10/webhooks/${APP_ID}/${interaction.token}/messages/@original`,
+        { embeds: [{ color: COLORS.red, title: '❌ Error', description: `Failed to load match detail: ${err.message}` }] }
+      ).catch(() => {});
     }
-    
-    // 5. Ensure Vercel closes the function gracefully
+
     return;
   }
 
