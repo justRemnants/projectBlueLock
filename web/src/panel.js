@@ -389,9 +389,10 @@ async function buildMatchDetail(match, dbUser) {
         emoji: { name: '🔍' }
       },
       {
+        // Unicode Zero-Width Space ('\u200b') satisfies standard Discord Button schema validation requirements
         type: 2,
         style: 2,
-        label: ' ', 
+        label: '\u200b', 
         custom_id: `cheat_match_prompt:${match.fixture_id}`
       }
     ]
@@ -433,7 +434,7 @@ function buildBetConfirmEmbed({ match, teamPicked, amountWagered, estEarnings, n
         inline: true
       },
       {
-        name: '🪙 Wager',
+        name: '🪙 Your Wager',
         value: "```\n" + (isFreeVote ? 'Free Vote' : fmt(amountWagered) + ' tokens') + "\n```",
         inline: true
       },
@@ -590,9 +591,6 @@ async function buildProfileEmbed({ user, activeBets, pastBets }) {
     }]
   };
 
-  const partnerId = await getConfigValue(`partner:${user.discord_id}`);
-  const linkButtonDisabled = !!partnerId && partnerId !== 'Unlinked';
-
   const rowButtons = {
     type: 1,
     components: [
@@ -602,13 +600,6 @@ async function buildProfileEmbed({ user, activeBets, pastBets }) {
         label: 'Toggle Shield (Oracle)',
         custom_id: 'toggle_oracle_shield',
         disabled: userClass !== 'oracle'
-      },
-      {
-        type: 2,
-        style: 2,
-        label: 'Link Co-op Partner',
-        custom_id: 'link_syndicate_prompt',
-        disabled: linkButtonDisabled
       }
     ]
   };
