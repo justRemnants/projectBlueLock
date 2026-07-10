@@ -163,6 +163,26 @@ async function handleCommand(interaction, res) {
     }
   }
 
+  if (name === 'check-api') {
+    try {
+      const status = await checkApiStatus();
+      return sendJson(res, {
+        type: R.MESSAGE,
+        data: {
+          flags: FLAGS.EPHEMERAL,
+          embeds: [{
+            color: status.ok ? COLORS.green : COLORS.red,
+            title: '📡  Football-Data.org API Status',
+            description: status.message,
+            timestamp: new Date().toISOString()
+          }]
+        }
+      });
+    } catch (err) {
+      return sendJson(res, errorEmbed(err.message));
+    }
+  }
+
   if (name === 'profile') {
     try {
       const dbUser = await getOrCreateUser(user);
@@ -286,6 +306,9 @@ async function handleCommand(interaction, res) {
       return sendJson(res, errorEmbed(err.message));
     }
   }
+
+  // Fallback for unhandled commands to prevent timeouts on Discord
+  return sendJson(res, errorEmbed(`The command "/${name}" is not implemented or supported on this host.`));
 }
 
 async function handleComponent(interaction, res) {
@@ -353,7 +376,17 @@ async function handleComponent(interaction, res) {
       // 2. Assemble the detailed match panel layout (~150ms)
       const detail = await buildMatchDetail(match, dbUser);
 
-      // 3. Return the Ephemeral Match Card directly in the HTTP Response
+      // 3. Reset the public dropdown instantly via REST API (~100ms)
+      // Passing the exact same components causes Discord to clear the user's local visual selection.
+      if (interaction.channel_id && interaction.message?.id) {
+        axios.patch(
+          `https://discord.com/api/v10/channels/${interaction.channel_id}/messages/${interaction.message.id}`,
+          { components: interaction.message.components },
+          { headers: { Authorization: `Bot ${BOT_TOKEN}` }, timeout: 4000 }
+        ).catch(e => console.warn('Failed to clear dropdown:', e.message));
+      }
+
+      // 4. Return the Ephemeral Match Card directly in the HTTP Response
       return sendJson(res, {
         type: R.MESSAGE, // Type 4
         data: {
@@ -500,23 +533,6 @@ async function handleComponent(interaction, res) {
         data: {
           flags: FLAGS.EPHEMERAL,
           content: `🔮  **Class chosen successfully!** Your class has been set to: **${chosenClass.toUpperCase()}**.`
-        }
-      });
-    } catch (err) {
-      return sendJson(res, errorEmbed(err.message));
-    }
-  }
-
-  if (customId === 'toggle_oracle_shield') {
-    try {
-      const current = await getConfigValue(`oracle_shield:${user.id}`) || 'off';
-      const next = current === 'on' ? 'off' : 'on';
-      await setConfigValue(`oracle_shield:${user.id}`, next);
-      return sendJson(res, {
-        type: R.MESSAGE,
-        data: {
-          flags: FLAGS.EPHEMERAL,
-          content: `🔮  **Oracle Streak Shield** has been toggled: **${next.toUpperCase()}**!`
         }
       });
     } catch (err) {

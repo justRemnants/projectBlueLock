@@ -240,7 +240,12 @@ async function getSoloStreak(userId, history) {
   const STREAK_START_DATE = new Date('2026-07-10T00:00:00Z');
   const freshBets = settledBets.filter(b => b.matches?.kickoff_time && new Date(b.matches.kickoff_time) >= STREAK_START_DATE);
   
-  freshBets.sort((a, b) => new Date(a.matches.kickoff_time) - new Date(b.matches.kickoff_time));
+  // Safe sorting with optional chaining to prevent TypeError crashes
+  freshBets.sort((a, b) => {
+    const timeA = a.matches?.kickoff_time ? new Date(a.matches.kickoff_time) : 0;
+    const timeB = b.matches?.kickoff_time ? new Date(b.matches.kickoff_time) : 0;
+    return timeA - timeB;
+  });
 
   let streak = 0;
   let shieldUsedInStage = false;
