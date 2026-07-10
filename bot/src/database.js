@@ -257,7 +257,12 @@ async function getPanelMessage() {
 
 async function getSoloStreak(userId, history) {
   const settledBets = history.filter(b => b.settled);
-  settledBets.sort((a, b) => new Date(a.matches?.kickoff_time) - new Date(b.matches?.kickoff_time));
+  
+  // Cutoff date implemented to reset previous history streaks to 0
+  const STREAK_START_DATE = new Date('2026-07-10T00:00:00Z');
+  const freshBets = settledBets.filter(b => b.matches?.kickoff_time && new Date(b.matches.kickoff_time) >= STREAK_START_DATE);
+  
+  freshBets.sort((a, b) => new Date(a.matches.kickoff_time) - new Date(b.matches.kickoff_time));
 
   let streak = 0;
   let shieldUsedInStage = false;
@@ -266,7 +271,7 @@ async function getSoloStreak(userId, history) {
   const isOracle = userClass === 'oracle';
   const shieldState = await getConfigValue(`oracle_shield:${userId}`) || 'off';
 
-  for (const b of settledBets) {
+  for (const b of freshBets) {
     const won = b.team_picked === b.matches?.winner;
     const isRefund = b.matches?.winner === 'draw' && b.team_picked !== 'draw';
 
